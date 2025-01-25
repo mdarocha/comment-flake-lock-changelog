@@ -1,2 +1,10 @@
-// eslint-disable-next-line no-console
-console.log("Hello via Bun! test");
+import { run } from "./main.ts";
+import core from "@actions/core";
+
+try {
+    await run();
+} catch (error) {
+    if (error instanceof Error) {
+        core.setFailed(error.message);
+    }
+}
