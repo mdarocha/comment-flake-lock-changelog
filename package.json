@@ -6,11 +6,15 @@
     "build": "bun build ./src/index.ts --target=node --sourcemap=none --outfile=./dist/index.js",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix"
   },
   "devDependencies": {
     "@trivago/prettier-plugin-sort-imports": "^5.2.1",
     "@types/bun": "latest",
+    "eslint": "^9.19.0",
+    "eslint-plugin-github": "^5.1.5",
     "prettier": "^3.4.2"
   },
   "peerDependencies": {
