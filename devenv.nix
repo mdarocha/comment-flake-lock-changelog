@@ -20,6 +20,10 @@
     };
   };
 
+  enterShell = ''
+    bun install
+  '';
+
   enterTest = ''
     # Basic checks - format, lint, typescript
     bun run format:check
