@@ -5,3 +5,7 @@ devenv.yaml
 devenv.nix
 README.md
 LICENSE
+.devenv*
+devenv.local.nix
+.direnv
+.pre-commit-config.yaml
