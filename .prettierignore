@@ -1,0 +1,7 @@
+dist/
+node_modules/
+devenv.lock
+devenv.yaml
+devenv.nix
+README.md
+LICENSE
