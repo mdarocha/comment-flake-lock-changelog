@@ -3,6 +3,19 @@
 {
   packages = [ pkgs.bun ];
 
-  # https://devenv.sh/pre-commit-hooks/
-  # pre-commit.hooks.shellcheck.enable = true;
+  git-hooks.hooks = {
+    format = {
+      enable = true;
+      name = "format with prettier";
+      files = "\\.(cjs|ts|json|yaml|yml)";
+      entry = "bunx prettier --write";
+    };
+
+    build = {
+      enable = true;
+      name = "build dist";
+      files = "src/*";
+      entry = "bun run build";
+    };
+  };
 }
