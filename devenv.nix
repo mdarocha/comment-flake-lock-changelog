@@ -14,8 +14,9 @@
     build = {
       enable = true;
       name = "build dist";
-      files = "src/*";
+      files = "^src/";
       entry = "bun run build";
+      pass_filenames = false;
     };
   };
 }
