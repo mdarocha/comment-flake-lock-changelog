@@ -41,6 +41,8 @@
     if [ "$before_hash" != "$after_hash" ]; then
       echo "dist/ is not up-to-date"
       exit 1
+    else
+      echo "dist/ is up-to-date"
     fi
   '';
 }
