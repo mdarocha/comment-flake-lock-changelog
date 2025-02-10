@@ -9,8 +9,8 @@ export default [
     {
         rules: {
             "no-restricted-imports": ["error", { patterns: [".*"] }],
-            "importPlugin/no-unresolved": "off",
-            "importPlugin/extensions": ["error", "never", { graphql: "always" }],
+            "import/no-unresolved": "off",
+            "import/extensions": ["error", "never", { graphql: "always" }],
         },
     },
 ];
