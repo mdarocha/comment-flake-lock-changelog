@@ -18769,13 +18769,15 @@ var require_core = __commonJS((exports) => {
   exports.platform = __importStar(require_platform());
 });
 
+// src/index.ts
+var import_core = __toESM(require_core(), 1);
+
 // src/main.ts
 async function run() {
   throw new Error("TODO!");
 }
 
 // src/index.ts
-var import_core = __toESM(require_core(), 1);
 try {
   await run();
 } catch (error) {

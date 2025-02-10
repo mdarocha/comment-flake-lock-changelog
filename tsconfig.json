@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     // Enable latest features
-    "lib": ["ESNext", "DOM"],
+    "lib": ["ESNext", "DOM", "ESNext.Disposable"],
     "target": "ESNext",
     "module": "ESNext",
     "moduleDetection": "force",
@@ -22,6 +22,16 @@
     // Some stricter flags (disabled by default)
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": true
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+
+    "types": ["bun-types/globals"],
+    "paths": {
+      "~/*": ["./src/*"]
+    }
   }
 }

@@ -6,4 +6,11 @@ export default [
     },
     github.getFlatConfigs().recommended,
     ...github.getFlatConfigs().typescript,
+    {
+        rules: {
+            "no-restricted-imports": ["error", { patterns: [".*"] }],
+            "importPlugin/no-unresolved": "off",
+            "importPlugin/extensions": ["error", "never", { graphql: "always" }],
+        },
+    },
 ];

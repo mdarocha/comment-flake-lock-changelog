@@ -1,5 +1,5 @@
-import { run } from "./main";
 import core from "@actions/core";
+import { run } from "~/main";
 
 try {
     await run();

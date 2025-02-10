@@ -1,0 +1,24 @@
+name: ✅ Lint & test
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - uses: cachix/install-nix-action@8887e596b4ee1134dae06b98d573bd674693f47c # v26
+      - uses: cachix/cachix-action@18cf96c7c98e048e10a83abd92116114cd8504be # v14
+        with:
+          name: devenv
+
+      - name: Install devenv.sh
+        run: nix profile install nixpkgs#devenv
+
+      - name: Build devenv shell and run any hooks & tests
+        run: devenv test

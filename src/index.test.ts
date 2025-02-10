@@ -1,4 +1,5 @@
 import { beforeEach, expect, mock, test } from "bun:test";
+import { mockModule } from "~/utils/mockModule";
 
 beforeEach(() => {
     // have to do this manually, since jest.resetModules() is not implemented
@@ -10,7 +11,7 @@ beforeEach(() => {
 
 test("should execute run()", async () => {
     const run = mock(() => {});
-    mock.module("./main", () => ({ run }));
+    using _mainMock = await mockModule("~/main", () => ({ run }));
 
     await import("./index");
 
@@ -19,7 +20,7 @@ test("should execute run()", async () => {
 
 test("should call setFailed if run() throws an error", async (done) => {
     const errorMessage = `Test error ${Math.random()}`;
-    mock.module("./main", () => ({
+    using _mainMock = await mockModule("~/main", () => ({
         run: () => {
             throw new Error(errorMessage);
         },
@@ -28,7 +29,7 @@ test("should call setFailed if run() throws an error", async (done) => {
     const setFailed = mock(() => {
         done();
     });
-    mock.module("@actions/core", () => ({
+    using _actionsCoreMock = await mockModule("@actions/core", () => ({
         default: { setFailed },
     }));
 

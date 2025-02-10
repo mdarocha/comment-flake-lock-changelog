@@ -1,0 +1,8 @@
+query GetPullRequestRefs($owner: String!, $repo: String!, $prNumber: Int!) {
+    repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+            baseRefOid
+            headRefOid
+        }
+    }
+}
