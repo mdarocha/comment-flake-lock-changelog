@@ -7,14 +7,14 @@ import { mock } from "bun:test";
  * @param renderMocks - function to generate mocks (by their named or default exports)
  * @returns an object
  */
-export const mockModule = async (modulePath: string, renderMocks: () => Record<string, any>) => {
-    let original = {
+export const mockModule = async (modulePath: string, renderMocks: () => Record<string, unknown>) => {
+    const original = {
         ...(await import(modulePath)),
     };
 
-    let mocks = renderMocks();
+    const mocks = renderMocks();
 
-    let result = {
+    const result = {
         ...original,
         ...mocks,
     };

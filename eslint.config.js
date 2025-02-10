@@ -11,6 +11,19 @@ export default [
             "no-restricted-imports": ["error", { patterns: [".*"] }],
             "import/no-unresolved": "off",
             "import/extensions": ["error", "never", { graphql: "always" }],
+            "i18n-text/no-en": "off",
+            "@typescript-eslint/no-unused-vars": [
+                "error",
+                {
+                    args: "all",
+                    argsIgnorePattern: "^_",
+                    caughtErrors: "all",
+                    caughtErrorsIgnorePattern: "^_",
+                    destructuredArrayIgnorePattern: "^_",
+                    varsIgnorePattern: "^_",
+                    ignoreRestSiblings: true,
+                },
+            ],
         },
     },
 ];

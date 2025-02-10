@@ -4,9 +4,9 @@ import { mockModule } from "~/utils/mockModule";
 beforeEach(() => {
     // have to do this manually, since jest.resetModules() is not implemented
     // Resets the module cache, so each test re-evaluates the imported modules
-    Object.keys(require.cache).forEach((key) => {
+    for (const key of Object.keys(require.cache)) {
         delete require.cache[key];
-    });
+    }
 });
 
 test("should execute run()", async () => {

@@ -36,9 +36,9 @@ interface GetPullRequestChangedFilesResponseData {
                     endCursor: string;
                     hasNextPage: boolean;
                 };
-                nodes: {
+                nodes: Array<{
                     path: string;
-                }[];
+                }>;
             };
         };
     };

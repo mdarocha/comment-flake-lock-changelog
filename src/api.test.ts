@@ -1,6 +1,6 @@
-import { getFileContentAtCommit, getPullRequestChangedFiles, getPullRequestRefs } from "./api";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Mock } from "bun:test";
+import { getFileContentAtCommit, getPullRequestChangedFiles, getPullRequestRefs } from "~/api";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
 import type { GetFileContentAtCommitResponse } from "~/queries/GetFileContentAtCommit.graphql";
 import GetPullRequestChangedFilesQuery from "~/queries/GetPullRequestChangedFiles.graphql" with { type: "text" };
@@ -9,7 +9,7 @@ import GetPullRequestRefsQuery from "~/queries/GetPullRequestRefs.graphql" with 
 import type { GetPullRequestRefsResponse } from "~/queries/GetPullRequestRefs.graphql";
 import { mockModule } from "~/utils/mockModule";
 
-let moduleMocks: Awaited<ReturnType<typeof mockModule>>[] = [];
+let moduleMocks: Array<Awaited<ReturnType<typeof mockModule>>> = [];
 let logMock: Mock<(log: string) => void>;
 
 beforeEach(async () => {
@@ -131,7 +131,9 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-    moduleMocks.forEach((mock) => mock.dispose());
+    for (const moduleMock of moduleMocks) {
+        moduleMock.dispose();
+    }
 });
 
 describe("getPullRequestChangedFiles", () => {
