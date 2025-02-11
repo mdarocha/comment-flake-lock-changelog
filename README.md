@@ -13,6 +13,16 @@ This action is meant to be used as a helper to [update-flake-lock](https://githu
 ## Example usage
 
 ```yaml
+name: Update flake.lock
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # runs daily at 00:00
+
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   lockfile:
     name: Update lockfile
@@ -34,3 +44,7 @@ jobs:
         with:
           pull-request-number: ${{ steps.update-flake-lock.outputs.pull-request-number }}
 ```
+
+## Example result
+
+![image](https://github.com/user-attachments/assets/f788dc54-b14a-4d4e-acbc-9e771b136375)
