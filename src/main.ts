@@ -103,13 +103,22 @@ export async function run(): Promise<void> {
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
             for (const commit of commits) {
                 core.info(`Checking for PRs associated with commit ${commit.sha}`);
+
+                // if the commit message contains a @mention, we add an unicode word joiner
+                // between @ and username, to avoid spamming the mentioned user.
+                const commitMessage = commit.message.replace(/@/g, "@\u200D");
+
+                const commitListItem = `- [${commitMessage}](${commit.url})`;
+
                 const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
                 if (pr) {
+                    // use redirect.github.com instead of github.com to avoid spamming backlinks
+                    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
                     result.push(
-                        `- [${commit.message}](${commit.url}) - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${pr.url})`,
+                        `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`,
                     );
                 } else {
-                    result.push(`- [${commit.message}](${commit.url})`);
+                    result.push(commitListItem);
                 }
             }
 
