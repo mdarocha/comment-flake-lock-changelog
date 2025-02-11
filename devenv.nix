@@ -1,7 +1,7 @@
 { pkgs, ... }:
 
 {
-  packages = [ pkgs.bun ];
+  packages = [ pkgs.bun pkgs.nodejs_22 ];
 
   git-hooks.hooks = {
     format = {

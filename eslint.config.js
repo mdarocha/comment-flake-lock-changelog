@@ -24,6 +24,14 @@ export default [
                     ignoreRestSiblings: true,
                 },
             ],
+            // Disallow Bun to maintain node compatibility
+            "no-restricted-globals": [
+                "error",
+                {
+                    name: "Bun",
+                    message: "Use node modules instead",
+                },
+            ],
         },
     },
 ];

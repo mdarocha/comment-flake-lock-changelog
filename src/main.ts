@@ -1,4 +1,5 @@
 import core from "@actions/core";
+import { writeFile } from "node:fs/promises";
 import {
     compareCommits,
     getFileContentAtCommit,
@@ -9,7 +10,7 @@ import {
 
 async function writeResultFile(content: string): Promise<void> {
     const path = `${process.env["RUNNER_TEMP"]}/comment-flake-lock-changelog-result.md`;
-    await Bun.write(path, content);
+    await writeFile(path, content);
 }
 
 interface LockfileItem {

@@ -22678,6 +22678,7 @@ var import_core3 = __toESM(require_core(), 1);
 
 // src/main.ts
 var import_core2 = __toESM(require_core(), 1);
+import { writeFile } from "node:fs/promises";
 
 // src/api.ts
 var import_core = __toESM(require_core(), 1);
@@ -22764,7 +22765,7 @@ async function getPullRequestForCommit(owner, repo, commit) {
 // src/main.ts
 async function writeResultFile(content) {
   const path = `${process.env["RUNNER_TEMP"]}/comment-flake-lock-changelog-result.md`;
-  await Bun.write(path, content);
+  await writeFile(path, content);
 }
 function parseLockfile(content) {
   if (content === "") {
