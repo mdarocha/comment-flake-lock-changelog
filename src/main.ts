@@ -109,7 +109,7 @@ export async function run(): Promise<void> {
                 const commitMessage = commit.message.replace(/@/g, "@\u200D");
                 const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
 
-                const commitListItem = `- [${commitMessage}](${commit.url})`;
+                const commitListItem = `- [${commitMessage}](${commitUrl})`;
 
                 const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
                 if (pr) {

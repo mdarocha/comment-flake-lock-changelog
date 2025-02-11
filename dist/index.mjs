@@ -22821,7 +22821,7 @@ async function run() {
         import_core2.default.info(`Checking for PRs associated with commit ${commit.sha}`);
         const commitMessage = commit.message.replace(/@/g, "@\u200D");
         const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-        const commitListItem = `- [${commitMessage}](${commit.url})`;
+        const commitListItem = `- [${commitMessage}](${commitUrl})`;
         const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
         if (pr) {
           const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
