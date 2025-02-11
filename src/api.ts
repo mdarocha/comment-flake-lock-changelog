@@ -64,7 +64,7 @@ export async function compareCommits(
     repo: string,
     base: string,
     head: string,
-): Promise<Array<{ message: string; url: string }>> {
+): Promise<Array<{ sha: string; message: string; url: string }>> {
     const client = getGithubClient();
     const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
         owner,
@@ -73,6 +73,7 @@ export async function compareCommits(
     });
 
     return compareData.commits.map((commit) => ({
+        sha: commit.sha,
         message: commit.commit.message.split("\n")[0],
         url: commit.html_url,
     }));
@@ -84,7 +85,7 @@ export async function getPullRequestForCommit(
     owner: string,
     repo: string,
     commit: string,
-): Promise<{ id: string; url: string } | null> {
+): Promise<{ id: number; url: string } | null> {
     const client = getGithubClient();
     const { data: associatedPRs } = await client.rest.repos.listPullRequestsAssociatedWithCommit({
         owner,
