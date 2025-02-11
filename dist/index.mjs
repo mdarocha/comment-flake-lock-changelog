@@ -22705,7 +22705,7 @@ async function getPullRequestChangedFiles(prNumber) {
     ...repo,
     prNumber
   });
-  const data = result.data.repository.pullRequest.files;
+  const data = result.repository.pullRequest.files;
   if (data.totalCount > data.nodes.length) {
     import_core.default.warning("Not all files were loaded due to a large PR diff, some files may be missing from the changelog.");
   }
@@ -22719,8 +22719,8 @@ async function getPullRequestRefs(prNumber) {
     prNumber
   });
   return {
-    base: result.data.repository.pullRequest.baseRefOid,
-    head: result.data.repository.pullRequest.headRefOid
+    base: result.repository.pullRequest.baseRefOid,
+    head: result.repository.pullRequest.headRefOid
   };
 }
 async function getFileContentAtCommit(commit, path) {
@@ -22731,7 +22731,7 @@ async function getFileContentAtCommit(commit, path) {
     ...repo,
     expression: `${commit}:${normalizedPath}`
   });
-  return result.data.repository.object.text;
+  return result.repository.object.text;
 }
 async function compareCommits(owner, repo, base, head) {
   const client = getGithubClient();
@@ -22792,8 +22792,8 @@ function getLockfileDiffs(before, after) {
 }
 async function run() {
   const prNumber = Number(import_core2.default.getInput("pull-request-number"));
-  if (isNaN(prNumber)) {
-    throw new Error("Invalid pull request number");
+  if (isNaN(prNumber) || prNumber === 0) {
+    throw new Error(`Invalid pull request number: ${prNumber}`);
   }
   const result = ["# Flake inputs changelog"];
   import_core2.default.info(`Fetching changed files for PR #${prNumber}`);

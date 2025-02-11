@@ -62,8 +62,8 @@ function getLockfileDiffs(before: Lockfile, after: Lockfile): Array<LockfileItem
 
 export async function run(): Promise<void> {
     const prNumber = Number(core.getInput("pull-request-number"));
-    if (isNaN(prNumber)) {
-        throw new Error("Invalid pull request number");
+    if (isNaN(prNumber) || prNumber === 0) {
+        throw new Error(`Invalid pull request number: ${prNumber}`);
     }
 
     const result = ["# Flake inputs changelog"];

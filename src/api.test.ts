@@ -25,12 +25,10 @@ beforeEach(async () => {
                         variables["prNumber"] === 13
                     ) {
                         return {
-                            data: {
-                                repository: {
-                                    pullRequest: {
-                                        baseRefOid: "8ec8ff054bb9ddd9a8acd0712afc5cf76bacfa48",
-                                        headRefOid: "8dd1669bbe49111536c3e8d784857773a91a8c99",
-                                    },
+                            repository: {
+                                pullRequest: {
+                                    baseRefOid: "8ec8ff054bb9ddd9a8acd0712afc5cf76bacfa48",
+                                    headRefOid: "8dd1669bbe49111536c3e8d784857773a91a8c99",
                                 },
                             },
                         } satisfies GetPullRequestRefsResponse;
@@ -44,11 +42,9 @@ beforeEach(async () => {
                         variables["expression"] === "8dd1669bbe49111536c3e8d784857773a91a8c99:test.txt"
                     ) {
                         return {
-                            data: {
-                                repository: {
-                                    object: {
-                                        text: ["TEST FILE", "line 1", "line 2"].join("\n"),
-                                    },
+                            repository: {
+                                object: {
+                                    text: ["TEST FILE", "line 1", "line 2"].join("\n"),
                                 },
                             },
                         } satisfies GetFileContentAtCommitResponse;
@@ -61,17 +57,15 @@ beforeEach(async () => {
                         variables["prNumber"] === 13
                     ) {
                         return {
-                            data: {
-                                repository: {
-                                    pullRequest: {
-                                        files: {
-                                            totalCount: 2,
-                                            pageInfo: {
-                                                endCursor: "end",
-                                                hasNextPage: false,
-                                            },
-                                            nodes: [{ path: "text.txt" }, { path: "text2.txt" }],
+                            repository: {
+                                pullRequest: {
+                                    files: {
+                                        totalCount: 2,
+                                        pageInfo: {
+                                            endCursor: "end",
+                                            hasNextPage: false,
                                         },
+                                        nodes: [{ path: "text.txt" }, { path: "text2.txt" }],
                                     },
                                 },
                             },
@@ -84,17 +78,15 @@ beforeEach(async () => {
                         variables["prNumber"] === 16
                     ) {
                         return {
-                            data: {
-                                repository: {
-                                    pullRequest: {
-                                        files: {
-                                            totalCount: 4,
-                                            pageInfo: {
-                                                endCursor: "end",
-                                                hasNextPage: false,
-                                            },
-                                            nodes: [{ path: "text.txt" }, { path: "text2.txt" }],
+                            repository: {
+                                pullRequest: {
+                                    files: {
+                                        totalCount: 4,
+                                        pageInfo: {
+                                            endCursor: "end",
+                                            hasNextPage: false,
                                         },
+                                        nodes: [{ path: "text.txt" }, { path: "text2.txt" }],
                                     },
                                 },
                             },

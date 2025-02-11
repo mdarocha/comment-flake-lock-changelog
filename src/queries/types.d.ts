@@ -1,4 +1,4 @@
-type GraphQlResponse<T> = { data: T };
+type GraphQlResponse<T> = T;
 
 interface GetPullRequestRefsResponseData {
     repository: {

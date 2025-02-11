@@ -21,7 +21,7 @@ export async function getPullRequestChangedFiles(prNumber: number): Promise<stri
         prNumber,
     });
 
-    const data = result.data.repository.pullRequest.files;
+    const data = result.repository.pullRequest.files;
     if (data.totalCount > data.nodes.length) {
         core.warning("Not all files were loaded due to a large PR diff, some files may be missing from the changelog.");
     }
@@ -39,8 +39,8 @@ export async function getPullRequestRefs(prNumber: number): Promise<{ base: stri
     });
 
     return {
-        base: result.data.repository.pullRequest.baseRefOid,
-        head: result.data.repository.pullRequest.headRefOid,
+        base: result.repository.pullRequest.baseRefOid,
+        head: result.repository.pullRequest.headRefOid,
     };
 }
 
@@ -55,7 +55,7 @@ export async function getFileContentAtCommit(commit: string, path: string): Prom
         expression: `${commit}:${normalizedPath}`,
     });
 
-    return result.data.repository.object.text;
+    return result.repository.object.text;
 }
 
 // TODO tests

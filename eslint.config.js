@@ -31,6 +31,10 @@ export default [
                     name: "Bun",
                     message: "Use node modules instead",
                 },
+                {
+                    name: "console",
+                    message: "Use @actions/core instead",
+                },
             ],
         },
     },
