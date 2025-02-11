@@ -22812,6 +22812,9 @@ async function run() {
     for (const diff of diffs) {
       import_core2.default.info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
       result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
+      result.push("");
+      result.push("<details open><summary>Changelog</summary>");
+      result.push("");
       result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       for (const commit of commits) {
@@ -22823,6 +22826,8 @@ async function run() {
           result.push(`- [${commit.message}](${commit.url})`);
         }
       }
+      result.push("");
+      result.push("</details>");
     }
   }
   import_core2.default.info("Writing result file");
