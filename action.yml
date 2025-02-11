@@ -1,0 +1,28 @@
+name: "Comment flake.lock changelog"
+description: "Comment with changelogs on PRs that update flake.lock files."
+inputs:
+  pull-request-number:
+    description: "The number of the pull request to analyse"
+    required: true
+  token:
+    description: "GITHUB_TOKEN or a `repo` scoped Personal Access Token (PAT)"
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Analyse PR
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/dist/index.mjs"
+      env:
+        # Manually expose inputs so getInput from @actions/toolkit works
+        INPUT_PULL-REQUEST-NUMBER: ${{ inputs.pull-request-number }}
+        INPUT_TOKEN: ${{ inputs.token }}
+
+    - name: Comment the result
+      uses: thollander/actions-comment-pull-request@e4a76dd2b0a3c2027c3fd84147a67c22ee4c90fa # v3
+      with:
+        github-token: ${{ inputs.token }}
+        file-path: "${{ runner.temp }}/comment-flake-lock-changelog-result.md"
+        pr-number: ${{ inputs.pull-request-number }}
+        comment-tag: comment-flake-lock-changelog

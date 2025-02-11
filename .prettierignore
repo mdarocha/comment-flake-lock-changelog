@@ -10,3 +10,4 @@ devenv.local.nix
 .direnv
 .pre-commit-config.yaml
 .github/
+action.yml
