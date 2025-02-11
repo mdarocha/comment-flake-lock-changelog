@@ -57,3 +57,47 @@ export async function getFileContentAtCommit(commit: string, path: string): Prom
 
     return result.data.repository.object.text;
 }
+
+// TODO tests
+export async function compareCommits(
+    owner: string,
+    repo: string,
+    base: string,
+    head: string,
+): Promise<Array<{ message: string; url: string }>> {
+    const client = getGithubClient();
+    const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${base}...${head}`,
+    });
+
+    return compareData.commits.map((commit) => ({
+        message: commit.commit.message.split("\n")[0],
+        url: commit.html_url,
+    }));
+}
+
+// TODO tests
+// TODO optimize this to make less api calls
+export async function getPullRequestForCommit(
+    owner: string,
+    repo: string,
+    commit: string,
+): Promise<{ id: string; url: string } | null> {
+    const client = getGithubClient();
+    const { data: associatedPRs } = await client.rest.repos.listPullRequestsAssociatedWithCommit({
+        owner,
+        repo,
+        commit_sha: commit,
+    });
+
+    if (associatedPRs.length === 0) {
+        return null;
+    }
+
+    return {
+        id: associatedPRs[0].id,
+        url: associatedPRs[0].html_url,
+    };
+}
