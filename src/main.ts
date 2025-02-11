@@ -107,6 +107,7 @@ export async function run(): Promise<void> {
                 // if the commit message contains a @mention, we add an unicode word joiner
                 // between @ and username, to avoid spamming the mentioned user.
                 const commitMessage = commit.message.replace(/@/g, "@\u200D");
+                const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
 
                 const commitListItem = `- [${commitMessage}](${commit.url})`;
 
