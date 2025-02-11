@@ -47,4 +47,4 @@ jobs:
 
 ## Example result
 
-![image](https://github.com/user-attachments/assets/f788dc54-b14a-4d4e-acbc-9e771b136375)
+![image](https://github.com/user-attachments/assets/f6a2217f-3d44-462b-a9c9-a1393206369e)
