@@ -30,6 +30,6 @@ jobs:
           pr-labels: automated
 
       - uses: mdarocha/comment-flake-lock-changelog@6e072ce41517f02a3c5f3ef5eaf9c3e2abe7244e # v0.9.0
-        if: ${{ steps.update-flake-lock.outputs.pull-request-number != '0' }}
+        if: ${{ steps.update-flake-lock.outputs.pull-request-number != 0 }}
         with:
           pull-request-number: ${{ steps.update-flake-lock.outputs.pull-request-number }}
