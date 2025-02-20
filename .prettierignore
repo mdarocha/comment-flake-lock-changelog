@@ -1,12 +1,10 @@
 dist/
 node_modules/
-devenv.lock
-devenv.yaml
-devenv.nix
+*.nix
+flake.lock
 README.md
 LICENSE
 .devenv*
-devenv.local.nix
 .direnv
 .pre-commit-config.yaml
 .github/
