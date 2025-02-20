@@ -22832,6 +22832,7 @@ async function run() {
       }
       result.push("");
       result.push("</details>");
+      result.push("");
     }
   }
   import_core2.default.info("Writing result file");

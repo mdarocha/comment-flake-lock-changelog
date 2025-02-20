@@ -125,6 +125,7 @@ export async function run(): Promise<void> {
 
             result.push("");
             result.push("</details>");
+            result.push("");
         }
     }
 
