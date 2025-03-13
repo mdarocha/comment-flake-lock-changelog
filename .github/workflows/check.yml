@@ -20,8 +20,5 @@ jobs:
         with:
           name: devenv
 
-      - name: Install devenv.sh
-        run: nix profile install nixpkgs#devenv
-
       - name: Build devenv shell and run any hooks & tests
-        run: devenv test
+        run: nix develop --no-pure-eval --command bash -c 'devenv test'
