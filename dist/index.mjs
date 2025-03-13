@@ -427,7 +427,8 @@ var require_tunnel = __commonJS((exports) => {
     }
     function onError(cause) {
       connectReq.removeAllListeners();
-      debug("tunneling socket could not be established, cause=%s\n", cause.message, cause.stack);
+      debug(`tunneling socket could not be established, cause=%s
+`, cause.message, cause.stack);
       var error = new Error("tunneling socket could not be established, " + "cause=" + cause.message);
       error.code = "ECONNRESET";
       options.request.emit("error", error);
@@ -497,8 +498,7 @@ var require_tunnel = __commonJS((exports) => {
       console.error.apply(console, args);
     };
   } else {
-    debug = function() {
-    };
+    debug = function() {};
   }
   exports.debug = debug;
 });
@@ -926,8 +926,7 @@ var require_util = __commonJS((exports, module) => {
   var { stringify } = __require("querystring");
   var { headerNameLowerCasedRecord } = require_constants();
   var [nodeMajor, nodeMinor] = process.versions.node.split(".").map((v) => Number(v));
-  function nop() {
-  }
+  function nop() {}
   function isStream(obj) {
     return obj && typeof obj === "object" && typeof obj.pipe === "function" && typeof obj.on === "function";
   }
@@ -1504,8 +1503,7 @@ var require_PartStream = __commonJS((exports, module) => {
     ReadableStream.call(this, opts);
   }
   inherits(PartStream, ReadableStream);
-  PartStream.prototype._read = function(n) {
-  };
+  PartStream.prototype._read = function(n) {};
   module.exports = PartStream;
 });
 
@@ -1528,7 +1526,9 @@ var require_HeaderParser = __commonJS((exports, module) => {
   var inherits = __require("node:util").inherits;
   var getLimit = require_getLimit();
   var StreamSearch = require_sbmh();
-  var B_DCRLF = Buffer.from("\r\n\r\n");
+  var B_DCRLF = Buffer.from(`\r
+\r
+`);
   var RE_CRLF = /\r\n/g;
   var RE_HDR = /^([^:]+):[ \t]?([\x00-\xFF]+)?$/;
   function HeaderParser(cfg) {
@@ -1628,9 +1628,9 @@ var require_Dicer = __commonJS((exports, module) => {
   var HeaderParser = require_HeaderParser();
   var DASH = 45;
   var B_ONEDASH = Buffer.from("-");
-  var B_CRLF = Buffer.from("\r\n");
-  var EMPTY_FN = function() {
-  };
+  var B_CRLF = Buffer.from(`\r
+`);
+  var EMPTY_FN = function() {};
   function Dicer(cfg) {
     if (!(this instanceof Dicer)) {
       return new Dicer(cfg);
@@ -1730,7 +1730,8 @@ var require_Dicer = __commonJS((exports, module) => {
   };
   Dicer.prototype.setBoundary = function(boundary) {
     const self = this;
-    this._bparser = new StreamSearch("\r\n--" + boundary);
+    this._bparser = new StreamSearch(`\r
+--` + boundary);
     this._bparser.on("info", function(isMatch, data, start, end) {
       self._oninfo(isMatch, data, start, end);
     });
@@ -1946,8 +1947,7 @@ var require_decodeText = __commonJS((exports, module) => {
       if (textDecoders.has(exports.toString())) {
         try {
           return textDecoders.get(exports).decode(data);
-        } catch {
-        }
+        } catch {}
       }
       return typeof data === "string" ? data : data.toString();
     }
@@ -1966,7 +1966,7 @@ var require_parseParams = __commonJS((exports, module) => {
   var decodeText = require_decodeText();
   var RE_ENCODED = /%[a-fA-F0-9][a-fA-F0-9]/g;
   var EncodedLookup = {
-    "%00": "\0",
+    "%00": "\x00",
     "%01": "\x01",
     "%02": "\x02",
     "%03": "\x03",
@@ -1984,8 +1984,8 @@ var require_parseParams = __commonJS((exports, module) => {
     "%0B": "\v",
     "%0c": "\f",
     "%0C": "\f",
-    "%0d": `\r`,
-    "%0D": `\r`,
+    "%0d": "\r",
+    "%0D": "\r",
     "%0e": "\x0E",
     "%0E": "\x0E",
     "%0f": "\x0F",
@@ -2142,316 +2142,316 @@ var require_parseParams = __commonJS((exports, module) => {
     "%7D": "}",
     "%7e": "~",
     "%7E": "~",
-    "%7f": "\x7F",
-    "%7F": "\x7F",
-    "%80": "\x80",
-    "%81": "\x81",
-    "%82": "\x82",
-    "%83": "\x83",
-    "%84": "\x84",
-    "%85": "\x85",
-    "%86": "\x86",
-    "%87": "\x87",
-    "%88": "\x88",
-    "%89": "\x89",
-    "%8a": "\x8A",
-    "%8A": "\x8A",
-    "%8b": "\x8B",
-    "%8B": "\x8B",
-    "%8c": "\x8C",
-    "%8C": "\x8C",
-    "%8d": "\x8D",
-    "%8D": "\x8D",
-    "%8e": "\x8E",
-    "%8E": "\x8E",
-    "%8f": "\x8F",
-    "%8F": "\x8F",
-    "%90": "\x90",
-    "%91": "\x91",
-    "%92": "\x92",
-    "%93": "\x93",
-    "%94": "\x94",
-    "%95": "\x95",
-    "%96": "\x96",
-    "%97": "\x97",
-    "%98": "\x98",
-    "%99": "\x99",
-    "%9a": "\x9A",
-    "%9A": "\x9A",
-    "%9b": "\x9B",
-    "%9B": "\x9B",
-    "%9c": "\x9C",
-    "%9C": "\x9C",
-    "%9d": "\x9D",
-    "%9D": "\x9D",
-    "%9e": "\x9E",
-    "%9E": "\x9E",
-    "%9f": "\x9F",
-    "%9F": "\x9F",
-    "%a0": "\xA0",
-    "%A0": "\xA0",
-    "%a1": "\xA1",
-    "%A1": "\xA1",
-    "%a2": "\xA2",
-    "%A2": "\xA2",
-    "%a3": "\xA3",
-    "%A3": "\xA3",
-    "%a4": "\xA4",
-    "%A4": "\xA4",
-    "%a5": "\xA5",
-    "%A5": "\xA5",
-    "%a6": "\xA6",
-    "%A6": "\xA6",
-    "%a7": "\xA7",
-    "%A7": "\xA7",
-    "%a8": "\xA8",
-    "%A8": "\xA8",
-    "%a9": "\xA9",
-    "%A9": "\xA9",
-    "%aa": "\xAA",
-    "%Aa": "\xAA",
-    "%aA": "\xAA",
-    "%AA": "\xAA",
-    "%ab": "\xAB",
-    "%Ab": "\xAB",
-    "%aB": "\xAB",
-    "%AB": "\xAB",
-    "%ac": "\xAC",
-    "%Ac": "\xAC",
-    "%aC": "\xAC",
-    "%AC": "\xAC",
-    "%ad": "\xAD",
-    "%Ad": "\xAD",
-    "%aD": "\xAD",
-    "%AD": "\xAD",
-    "%ae": "\xAE",
-    "%Ae": "\xAE",
-    "%aE": "\xAE",
-    "%AE": "\xAE",
-    "%af": "\xAF",
-    "%Af": "\xAF",
-    "%aF": "\xAF",
-    "%AF": "\xAF",
-    "%b0": "\xB0",
-    "%B0": "\xB0",
-    "%b1": "\xB1",
-    "%B1": "\xB1",
-    "%b2": "\xB2",
-    "%B2": "\xB2",
-    "%b3": "\xB3",
-    "%B3": "\xB3",
-    "%b4": "\xB4",
-    "%B4": "\xB4",
-    "%b5": "\xB5",
-    "%B5": "\xB5",
-    "%b6": "\xB6",
-    "%B6": "\xB6",
-    "%b7": "\xB7",
-    "%B7": "\xB7",
-    "%b8": "\xB8",
-    "%B8": "\xB8",
-    "%b9": "\xB9",
-    "%B9": "\xB9",
-    "%ba": "\xBA",
-    "%Ba": "\xBA",
-    "%bA": "\xBA",
-    "%BA": "\xBA",
-    "%bb": "\xBB",
-    "%Bb": "\xBB",
-    "%bB": "\xBB",
-    "%BB": "\xBB",
-    "%bc": "\xBC",
-    "%Bc": "\xBC",
-    "%bC": "\xBC",
-    "%BC": "\xBC",
-    "%bd": "\xBD",
-    "%Bd": "\xBD",
-    "%bD": "\xBD",
-    "%BD": "\xBD",
-    "%be": "\xBE",
-    "%Be": "\xBE",
-    "%bE": "\xBE",
-    "%BE": "\xBE",
-    "%bf": "\xBF",
-    "%Bf": "\xBF",
-    "%bF": "\xBF",
-    "%BF": "\xBF",
-    "%c0": "\xC0",
-    "%C0": "\xC0",
-    "%c1": "\xC1",
-    "%C1": "\xC1",
-    "%c2": "\xC2",
-    "%C2": "\xC2",
-    "%c3": "\xC3",
-    "%C3": "\xC3",
-    "%c4": "\xC4",
-    "%C4": "\xC4",
-    "%c5": "\xC5",
-    "%C5": "\xC5",
-    "%c6": "\xC6",
-    "%C6": "\xC6",
-    "%c7": "\xC7",
-    "%C7": "\xC7",
-    "%c8": "\xC8",
-    "%C8": "\xC8",
-    "%c9": "\xC9",
-    "%C9": "\xC9",
-    "%ca": "\xCA",
-    "%Ca": "\xCA",
-    "%cA": "\xCA",
-    "%CA": "\xCA",
-    "%cb": "\xCB",
-    "%Cb": "\xCB",
-    "%cB": "\xCB",
-    "%CB": "\xCB",
-    "%cc": "\xCC",
-    "%Cc": "\xCC",
-    "%cC": "\xCC",
-    "%CC": "\xCC",
-    "%cd": "\xCD",
-    "%Cd": "\xCD",
-    "%cD": "\xCD",
-    "%CD": "\xCD",
-    "%ce": "\xCE",
-    "%Ce": "\xCE",
-    "%cE": "\xCE",
-    "%CE": "\xCE",
-    "%cf": "\xCF",
-    "%Cf": "\xCF",
-    "%cF": "\xCF",
-    "%CF": "\xCF",
-    "%d0": "\xD0",
-    "%D0": "\xD0",
-    "%d1": "\xD1",
-    "%D1": "\xD1",
-    "%d2": "\xD2",
-    "%D2": "\xD2",
-    "%d3": "\xD3",
-    "%D3": "\xD3",
-    "%d4": "\xD4",
-    "%D4": "\xD4",
-    "%d5": "\xD5",
-    "%D5": "\xD5",
-    "%d6": "\xD6",
-    "%D6": "\xD6",
-    "%d7": "\xD7",
-    "%D7": "\xD7",
-    "%d8": "\xD8",
-    "%D8": "\xD8",
-    "%d9": "\xD9",
-    "%D9": "\xD9",
-    "%da": "\xDA",
-    "%Da": "\xDA",
-    "%dA": "\xDA",
-    "%DA": "\xDA",
-    "%db": "\xDB",
-    "%Db": "\xDB",
-    "%dB": "\xDB",
-    "%DB": "\xDB",
-    "%dc": "\xDC",
-    "%Dc": "\xDC",
-    "%dC": "\xDC",
-    "%DC": "\xDC",
-    "%dd": "\xDD",
-    "%Dd": "\xDD",
-    "%dD": "\xDD",
-    "%DD": "\xDD",
-    "%de": "\xDE",
-    "%De": "\xDE",
-    "%dE": "\xDE",
-    "%DE": "\xDE",
-    "%df": "\xDF",
-    "%Df": "\xDF",
-    "%dF": "\xDF",
-    "%DF": "\xDF",
-    "%e0": "\xE0",
-    "%E0": "\xE0",
-    "%e1": "\xE1",
-    "%E1": "\xE1",
-    "%e2": "\xE2",
-    "%E2": "\xE2",
-    "%e3": "\xE3",
-    "%E3": "\xE3",
-    "%e4": "\xE4",
-    "%E4": "\xE4",
-    "%e5": "\xE5",
-    "%E5": "\xE5",
-    "%e6": "\xE6",
-    "%E6": "\xE6",
-    "%e7": "\xE7",
-    "%E7": "\xE7",
-    "%e8": "\xE8",
-    "%E8": "\xE8",
-    "%e9": "\xE9",
-    "%E9": "\xE9",
-    "%ea": "\xEA",
-    "%Ea": "\xEA",
-    "%eA": "\xEA",
-    "%EA": "\xEA",
-    "%eb": "\xEB",
-    "%Eb": "\xEB",
-    "%eB": "\xEB",
-    "%EB": "\xEB",
-    "%ec": "\xEC",
-    "%Ec": "\xEC",
-    "%eC": "\xEC",
-    "%EC": "\xEC",
-    "%ed": "\xED",
-    "%Ed": "\xED",
-    "%eD": "\xED",
-    "%ED": "\xED",
-    "%ee": "\xEE",
-    "%Ee": "\xEE",
-    "%eE": "\xEE",
-    "%EE": "\xEE",
-    "%ef": "\xEF",
-    "%Ef": "\xEF",
-    "%eF": "\xEF",
-    "%EF": "\xEF",
-    "%f0": "\xF0",
-    "%F0": "\xF0",
-    "%f1": "\xF1",
-    "%F1": "\xF1",
-    "%f2": "\xF2",
-    "%F2": "\xF2",
-    "%f3": "\xF3",
-    "%F3": "\xF3",
-    "%f4": "\xF4",
-    "%F4": "\xF4",
-    "%f5": "\xF5",
-    "%F5": "\xF5",
-    "%f6": "\xF6",
-    "%F6": "\xF6",
-    "%f7": "\xF7",
-    "%F7": "\xF7",
-    "%f8": "\xF8",
-    "%F8": "\xF8",
-    "%f9": "\xF9",
-    "%F9": "\xF9",
-    "%fa": "\xFA",
-    "%Fa": "\xFA",
-    "%fA": "\xFA",
-    "%FA": "\xFA",
-    "%fb": "\xFB",
-    "%Fb": "\xFB",
-    "%fB": "\xFB",
-    "%FB": "\xFB",
-    "%fc": "\xFC",
-    "%Fc": "\xFC",
-    "%fC": "\xFC",
-    "%FC": "\xFC",
-    "%fd": "\xFD",
-    "%Fd": "\xFD",
-    "%fD": "\xFD",
-    "%FD": "\xFD",
-    "%fe": "\xFE",
-    "%Fe": "\xFE",
-    "%fE": "\xFE",
-    "%FE": "\xFE",
-    "%ff": "\xFF",
-    "%Ff": "\xFF",
-    "%fF": "\xFF",
-    "%FF": "\xFF"
+    "%7f": "",
+    "%7F": "",
+    "%80": "",
+    "%81": "",
+    "%82": "",
+    "%83": "",
+    "%84": "",
+    "%85": "",
+    "%86": "",
+    "%87": "",
+    "%88": "",
+    "%89": "",
+    "%8a": "",
+    "%8A": "",
+    "%8b": "",
+    "%8B": "",
+    "%8c": "",
+    "%8C": "",
+    "%8d": "",
+    "%8D": "",
+    "%8e": "",
+    "%8E": "",
+    "%8f": "",
+    "%8F": "",
+    "%90": "",
+    "%91": "",
+    "%92": "",
+    "%93": "",
+    "%94": "",
+    "%95": "",
+    "%96": "",
+    "%97": "",
+    "%98": "",
+    "%99": "",
+    "%9a": "",
+    "%9A": "",
+    "%9b": "",
+    "%9B": "",
+    "%9c": "",
+    "%9C": "",
+    "%9d": "",
+    "%9D": "",
+    "%9e": "",
+    "%9E": "",
+    "%9f": "",
+    "%9F": "",
+    "%a0": " ",
+    "%A0": " ",
+    "%a1": "¡",
+    "%A1": "¡",
+    "%a2": "¢",
+    "%A2": "¢",
+    "%a3": "£",
+    "%A3": "£",
+    "%a4": "¤",
+    "%A4": "¤",
+    "%a5": "¥",
+    "%A5": "¥",
+    "%a6": "¦",
+    "%A6": "¦",
+    "%a7": "§",
+    "%A7": "§",
+    "%a8": "¨",
+    "%A8": "¨",
+    "%a9": "©",
+    "%A9": "©",
+    "%aa": "ª",
+    "%Aa": "ª",
+    "%aA": "ª",
+    "%AA": "ª",
+    "%ab": "«",
+    "%Ab": "«",
+    "%aB": "«",
+    "%AB": "«",
+    "%ac": "¬",
+    "%Ac": "¬",
+    "%aC": "¬",
+    "%AC": "¬",
+    "%ad": "­",
+    "%Ad": "­",
+    "%aD": "­",
+    "%AD": "­",
+    "%ae": "®",
+    "%Ae": "®",
+    "%aE": "®",
+    "%AE": "®",
+    "%af": "¯",
+    "%Af": "¯",
+    "%aF": "¯",
+    "%AF": "¯",
+    "%b0": "°",
+    "%B0": "°",
+    "%b1": "±",
+    "%B1": "±",
+    "%b2": "²",
+    "%B2": "²",
+    "%b3": "³",
+    "%B3": "³",
+    "%b4": "´",
+    "%B4": "´",
+    "%b5": "µ",
+    "%B5": "µ",
+    "%b6": "¶",
+    "%B6": "¶",
+    "%b7": "·",
+    "%B7": "·",
+    "%b8": "¸",
+    "%B8": "¸",
+    "%b9": "¹",
+    "%B9": "¹",
+    "%ba": "º",
+    "%Ba": "º",
+    "%bA": "º",
+    "%BA": "º",
+    "%bb": "»",
+    "%Bb": "»",
+    "%bB": "»",
+    "%BB": "»",
+    "%bc": "¼",
+    "%Bc": "¼",
+    "%bC": "¼",
+    "%BC": "¼",
+    "%bd": "½",
+    "%Bd": "½",
+    "%bD": "½",
+    "%BD": "½",
+    "%be": "¾",
+    "%Be": "¾",
+    "%bE": "¾",
+    "%BE": "¾",
+    "%bf": "¿",
+    "%Bf": "¿",
+    "%bF": "¿",
+    "%BF": "¿",
+    "%c0": "À",
+    "%C0": "À",
+    "%c1": "Á",
+    "%C1": "Á",
+    "%c2": "Â",
+    "%C2": "Â",
+    "%c3": "Ã",
+    "%C3": "Ã",
+    "%c4": "Ä",
+    "%C4": "Ä",
+    "%c5": "Å",
+    "%C5": "Å",
+    "%c6": "Æ",
+    "%C6": "Æ",
+    "%c7": "Ç",
+    "%C7": "Ç",
+    "%c8": "È",
+    "%C8": "È",
+    "%c9": "É",
+    "%C9": "É",
+    "%ca": "Ê",
+    "%Ca": "Ê",
+    "%cA": "Ê",
+    "%CA": "Ê",
+    "%cb": "Ë",
+    "%Cb": "Ë",
+    "%cB": "Ë",
+    "%CB": "Ë",
+    "%cc": "Ì",
+    "%Cc": "Ì",
+    "%cC": "Ì",
+    "%CC": "Ì",
+    "%cd": "Í",
+    "%Cd": "Í",
+    "%cD": "Í",
+    "%CD": "Í",
+    "%ce": "Î",
+    "%Ce": "Î",
+    "%cE": "Î",
+    "%CE": "Î",
+    "%cf": "Ï",
+    "%Cf": "Ï",
+    "%cF": "Ï",
+    "%CF": "Ï",
+    "%d0": "Ð",
+    "%D0": "Ð",
+    "%d1": "Ñ",
+    "%D1": "Ñ",
+    "%d2": "Ò",
+    "%D2": "Ò",
+    "%d3": "Ó",
+    "%D3": "Ó",
+    "%d4": "Ô",
+    "%D4": "Ô",
+    "%d5": "Õ",
+    "%D5": "Õ",
+    "%d6": "Ö",
+    "%D6": "Ö",
+    "%d7": "×",
+    "%D7": "×",
+    "%d8": "Ø",
+    "%D8": "Ø",
+    "%d9": "Ù",
+    "%D9": "Ù",
+    "%da": "Ú",
+    "%Da": "Ú",
+    "%dA": "Ú",
+    "%DA": "Ú",
+    "%db": "Û",
+    "%Db": "Û",
+    "%dB": "Û",
+    "%DB": "Û",
+    "%dc": "Ü",
+    "%Dc": "Ü",
+    "%dC": "Ü",
+    "%DC": "Ü",
+    "%dd": "Ý",
+    "%Dd": "Ý",
+    "%dD": "Ý",
+    "%DD": "Ý",
+    "%de": "Þ",
+    "%De": "Þ",
+    "%dE": "Þ",
+    "%DE": "Þ",
+    "%df": "ß",
+    "%Df": "ß",
+    "%dF": "ß",
+    "%DF": "ß",
+    "%e0": "à",
+    "%E0": "à",
+    "%e1": "á",
+    "%E1": "á",
+    "%e2": "â",
+    "%E2": "â",
+    "%e3": "ã",
+    "%E3": "ã",
+    "%e4": "ä",
+    "%E4": "ä",
+    "%e5": "å",
+    "%E5": "å",
+    "%e6": "æ",
+    "%E6": "æ",
+    "%e7": "ç",
+    "%E7": "ç",
+    "%e8": "è",
+    "%E8": "è",
+    "%e9": "é",
+    "%E9": "é",
+    "%ea": "ê",
+    "%Ea": "ê",
+    "%eA": "ê",
+    "%EA": "ê",
+    "%eb": "ë",
+    "%Eb": "ë",
+    "%eB": "ë",
+    "%EB": "ë",
+    "%ec": "ì",
+    "%Ec": "ì",
+    "%eC": "ì",
+    "%EC": "ì",
+    "%ed": "í",
+    "%Ed": "í",
+    "%eD": "í",
+    "%ED": "í",
+    "%ee": "î",
+    "%Ee": "î",
+    "%eE": "î",
+    "%EE": "î",
+    "%ef": "ï",
+    "%Ef": "ï",
+    "%eF": "ï",
+    "%EF": "ï",
+    "%f0": "ð",
+    "%F0": "ð",
+    "%f1": "ñ",
+    "%F1": "ñ",
+    "%f2": "ò",
+    "%F2": "ò",
+    "%f3": "ó",
+    "%F3": "ó",
+    "%f4": "ô",
+    "%F4": "ô",
+    "%f5": "õ",
+    "%F5": "õ",
+    "%f6": "ö",
+    "%F6": "ö",
+    "%f7": "÷",
+    "%F7": "÷",
+    "%f8": "ø",
+    "%F8": "ø",
+    "%f9": "ù",
+    "%F9": "ù",
+    "%fa": "ú",
+    "%Fa": "ú",
+    "%fA": "ú",
+    "%FA": "ú",
+    "%fb": "û",
+    "%Fb": "û",
+    "%fB": "û",
+    "%FB": "û",
+    "%fc": "ü",
+    "%Fc": "ü",
+    "%fC": "ü",
+    "%FC": "ü",
+    "%fd": "ý",
+    "%Fd": "ý",
+    "%fD": "ý",
+    "%FD": "ý",
+    "%fe": "þ",
+    "%Fe": "þ",
+    "%fE": "þ",
+    "%FE": "þ",
+    "%ff": "ÿ",
+    "%Ff": "ÿ",
+    "%fF": "ÿ",
+    "%FF": "ÿ"
   };
   function encodedReplacer(match) {
     return EncodedLookup[match];
@@ -2840,8 +2840,7 @@ var require_multipart = __commonJS((exports, module) => {
     this.truncated = false;
   }
   inherits(FileStream, Readable);
-  FileStream.prototype._read = function(n) {
-  };
+  FileStream.prototype._read = function(n) {};
   module.exports = Multipart;
 });
 
@@ -3522,8 +3521,7 @@ var require_util2 = __commonJS((exports, module) => {
     crypto = __require("crypto");
     const possibleRelevantHashes = ["sha256", "sha384", "sha512"];
     supportedHashes = crypto.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
-  } catch {
-  }
+  } catch {}
   function responseURL(response) {
     const urlList = response.urlList;
     const length = urlList.length;
@@ -3606,7 +3604,8 @@ var require_util2 = __commonJS((exports, module) => {
     if (potentialValue.startsWith("\t") || potentialValue.startsWith(" ") || potentialValue.endsWith("\t") || potentialValue.endsWith(" ")) {
       return false;
     }
-    if (potentialValue.includes("\0") || potentialValue.includes("\r") || potentialValue.includes("\n")) {
+    if (potentialValue.includes("\x00") || potentialValue.includes("\r") || potentialValue.includes(`
+`)) {
       return false;
     }
     return true;
@@ -3879,8 +3878,7 @@ var require_util2 = __commonJS((exports, module) => {
     }
     return true;
   }
-  function tryUpgradeRequestToAPotentiallyTrustworthyURL(request) {
-  }
+  function tryUpgradeRequestToAPotentiallyTrustworthyURL(request) {}
   function sameOrigin(A, B) {
     if (A.origin === B.origin && A.origin === "null") {
       return true;
@@ -4681,7 +4679,8 @@ var require_dataURL = __commonJS((exports, module) => {
     return serialization;
   }
   function isHTTPWhiteSpace(char) {
-    return char === "\r" || char === "\n" || char === "\t" || char === " ";
+    return char === "\r" || char === `
+` || char === "\t" || char === " ";
   }
   function removeHTTPWhitespace(str, leading = true, trailing = true) {
     let lead = 0;
@@ -4697,7 +4696,8 @@ var require_dataURL = __commonJS((exports, module) => {
     return str.slice(lead, trail + 1);
   }
   function isASCIIWhitespace(char) {
-    return char === "\r" || char === "\n" || char === "\t" || char === "\f" || char === " ";
+    return char === "\r" || char === `
+` || char === "\t" || char === "\f" || char === " ";
   }
   function removeASCIIWhitespace(str, leading = true, trailing = true) {
     let lead = 0;
@@ -4893,9 +4893,11 @@ var require_file = __commonJS((exports, module) => {
     return bytes;
   }
   function convertLineEndingsNative(s) {
-    let nativeLineEnding = "\n";
+    let nativeLineEnding = `
+`;
     if (process.platform === "win32") {
-      nativeLineEnding = "\r\n";
+      nativeLineEnding = `\r
+`;
     }
     return s.replace(/\r?\n/g, nativeLineEnding);
   }
@@ -5086,8 +5088,7 @@ var require_body = __commonJS((exports, module) => {
           controller.enqueue(typeof source === "string" ? textEncoder.encode(source) : source);
           queueMicrotask(() => readableStreamClose(controller));
         },
-        start() {
-        },
+        start() {},
         type: undefined
       });
     }
@@ -5108,21 +5109,29 @@ var require_body = __commonJS((exports, module) => {
       source = new Uint8Array(object.buffer.slice(object.byteOffset, object.byteOffset + object.byteLength));
     } else if (util.isFormDataLike(object)) {
       const boundary = `----formdata-undici-0${`${random(100000000000)}`.padStart(11, "0")}`;
-      const prefix = `--${boundary}\r\nContent-Disposition: form-data`;
+      const prefix = `--${boundary}\r
+Content-Disposition: form-data`;
       /*! formdata-polyfill. MIT License. Jimmy Wärting <https://jimmy.warting.se/opensource> */
       const escape = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
-      const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, "\r\n");
+      const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, `\r
+`);
       const blobParts = [];
       const rn = new Uint8Array([13, 10]);
       length = 0;
       let hasUnknownSizeValue = false;
       for (const [name, value] of object) {
         if (typeof value === "string") {
-          const chunk2 = textEncoder.encode(prefix + `; name="${escape(normalizeLinefeeds(name))}"` + `\r\n\r\n${normalizeLinefeeds(value)}\r\n`);
+          const chunk2 = textEncoder.encode(prefix + `; name="${escape(normalizeLinefeeds(name))}"` + `\r
+\r
+${normalizeLinefeeds(value)}\r
+`);
           blobParts.push(chunk2);
           length += chunk2.byteLength;
         } else {
-          const chunk2 = textEncoder.encode(`${prefix}; name="${escape(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape(value.name)}"` : "") + "\r\n" + `Content-Type: ${value.type || "application/octet-stream"}\r\n\r\n`);
+          const chunk2 = textEncoder.encode(`${prefix}; name="${escape(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape(value.name)}"` : "") + `\r
+` + `Content-Type: ${value.type || "application/octet-stream"}\r
+\r
+`);
           blobParts.push(chunk2, value, rn);
           if (typeof value.size === "number") {
             length += chunk2.byteLength + value.size + rn.byteLength;
@@ -5554,13 +5563,15 @@ var require_request = __commonJS((exports, module) => {
         const [bodyStream, contentType] = extractBody(body);
         if (this.contentType == null) {
           this.contentType = contentType;
-          this.headers += `content-type: ${contentType}\r\n`;
+          this.headers += `content-type: ${contentType}\r
+`;
         }
         this.body = bodyStream.stream;
         this.contentLength = bodyStream.length;
       } else if (util.isBlobLike(body) && this.contentType == null && body.type) {
         this.contentType = body.type;
-        this.headers += `content-type: ${body.type}\r\n`;
+        this.headers += `content-type: ${body.type}\r
+`;
       }
       util.validateHandler(handler, method, upgrade);
       this.servername = util.getServerName(this.host);
@@ -5692,7 +5703,8 @@ var require_request = __commonJS((exports, module) => {
       return request;
     }
     static [kHTTP2CopyHeaders](raw) {
-      const rawHeaders = raw.split("\r\n");
+      const rawHeaders = raw.split(`\r
+`);
       const headers = {};
       for (const header of rawHeaders) {
         const [key, value] = header.split(": ");
@@ -5714,7 +5726,8 @@ var require_request = __commonJS((exports, module) => {
     if (headerCharRegex.exec(val) !== null) {
       throw new InvalidArgumentError(`invalid ${key} header`);
     }
-    return skipAppend ? val : `${key}: ${val}\r\n`;
+    return skipAppend ? val : `${key}: ${val}\r
+`;
   }
   function processHeader(request, key, val, skipAppend = false) {
     if (val && (typeof val === "object" && !Array.isArray(val))) {
@@ -6077,8 +6090,7 @@ var require_connect = __commonJS((exports, module) => {
   }
   function setupTimeout(onConnectTimeout2, timeout) {
     if (!timeout) {
-      return () => {
-      };
+      return () => {};
     }
     let s1 = null;
     let s2 = null;
@@ -6296,7 +6308,7 @@ var require_constants3 = __commonJS((exports) => {
     FINISH2[FINISH2["UNSAFE"] = 2] = "UNSAFE";
   })(FINISH = exports.FINISH || (exports.FINISH = {}));
   exports.ALPHA = [];
-  for (let i = "A".charCodeAt(0);i <= "Z".charCodeAt(0); i++) {
+  for (let i = 65;i <= 90; i++) {
     exports.ALPHA.push(String.fromCharCode(i));
     exports.ALPHA.push(String.fromCharCode(i + 32));
   }
@@ -6349,7 +6361,7 @@ var require_constants3 = __commonJS((exports) => {
     "9"
   ];
   exports.ALPHANUM = exports.ALPHA.concat(exports.NUM);
-  exports.MARK = ["-", "_", ".", "!", "~", "*", "\'", "(", ")"];
+  exports.MARK = ["-", "_", ".", "!", "~", "*", "'", "(", ")"];
   exports.USERINFO_CHARS = exports.ALPHANUM.concat(exports.MARK).concat(["%", ";", ":", "&", "=", "+", "$", ","]);
   exports.STRICT_URL_CHAR = [
     "!",
@@ -6357,7 +6369,7 @@ var require_constants3 = __commonJS((exports) => {
     "$",
     "%",
     "&",
-    "\'",
+    "'",
     "(",
     ")",
     "*",
@@ -6394,7 +6406,7 @@ var require_constants3 = __commonJS((exports) => {
     "$",
     "%",
     "&",
-    "\'",
+    "'",
     "*",
     "+",
     "-",
@@ -6520,8 +6532,7 @@ var require_RedirectHandler = __commonJS((exports, module) => {
       }
     }
     onData(chunk) {
-      if (this.location) {
-      } else {
+      if (this.location) {} else {
         return this.handler.onData(chunk);
       }
     }
@@ -6843,7 +6854,8 @@ var require_client = __commonJS((exports, module) => {
       this[kLocalAddress] = localAddress != null ? localAddress : null;
       this[kResuming] = 0;
       this[kNeedDrain] = 0;
-      this[kHostHeader] = `host: ${this[kUrl].hostname}${this[kUrl].port ? `:${this[kUrl].port}` : ""}\r\n`;
+      this[kHostHeader] = `host: ${this[kUrl].hostname}${this[kUrl].port ? `:${this[kUrl].port}` : ""}\r
+`;
       this[kBodyTimeout] = bodyTimeout != null ? bodyTimeout : 300000;
       this[kHeadersTimeout] = headersTimeout != null ? headersTimeout : 300000;
       this[kStrictContentLength] = strictContentLength == null ? true : strictContentLength;
@@ -6893,8 +6905,7 @@ var require_client = __commonJS((exports, module) => {
       const origin = opts.origin || this[kUrl].origin;
       const request = this[kHTTPConnVersion] === "h2" ? Request[kHTTP2BuildRequest](origin, opts, handler) : Request[kHTTP1BuildRequest](origin, opts, handler);
       this[kQueue].push(request);
-      if (this[kResuming]) {
-      } else if (util.bodyLength(request.body) == null && util.isIterable(request.body)) {
+      if (this[kResuming]) {} else if (util.bodyLength(request.body) == null && util.isIterable(request.body)) {
         this[kResuming] = 1;
         process.nextTick(resume, this);
       } else {
@@ -7513,8 +7524,7 @@ var require_client = __commonJS((exports, module) => {
         });
       });
       if (client.destroyed) {
-        util.destroy(socket.on("error", () => {
-        }), new ClientDestroyedError);
+        util.destroy(socket.on("error", () => {}), new ClientDestroyedError);
         return;
       }
       client[kConnecting] = false;
@@ -7769,18 +7779,24 @@ var require_client = __commonJS((exports, module) => {
     if (blocking) {
       socket[kBlocking] = true;
     }
-    let header = `${method} ${path} HTTP/1.1\r\n`;
+    let header = `${method} ${path} HTTP/1.1\r
+`;
     if (typeof host === "string") {
-      header += `host: ${host}\r\n`;
+      header += `host: ${host}\r
+`;
     } else {
       header += client[kHostHeader];
     }
     if (upgrade) {
-      header += `connection: upgrade\r\nupgrade: ${upgrade}\r\n`;
+      header += `connection: upgrade\r
+upgrade: ${upgrade}\r
+`;
     } else if (client[kPipelining] && !socket[kReset]) {
-      header += "connection: keep-alive\r\n";
+      header += `connection: keep-alive\r
+`;
     } else {
-      header += "connection: close\r\n";
+      header += `connection: close\r
+`;
     }
     if (headers) {
       header += headers;
@@ -7790,16 +7806,21 @@ var require_client = __commonJS((exports, module) => {
     }
     if (!body || bodyLength === 0) {
       if (contentLength === 0) {
-        socket.write(`${header}content-length: 0\r\n\r\n`, "latin1");
+        socket.write(`${header}content-length: 0\r
+\r
+`, "latin1");
       } else {
         assert(contentLength === null, "no body must not have content length");
-        socket.write(`${header}\r\n`, "latin1");
+        socket.write(`${header}\r
+`, "latin1");
       }
       request.onRequestSent();
     } else if (util.isBuffer(body)) {
       assert(contentLength === body.byteLength, "buffer body must have content length");
       socket.cork();
-      socket.write(`${header}content-length: ${contentLength}\r\n\r\n`, "latin1");
+      socket.write(`${header}content-length: ${contentLength}\r
+\r
+`, "latin1");
       socket.write(body);
       socket.uncork();
       request.onBodySent(body);
@@ -8096,7 +8117,9 @@ var require_client = __commonJS((exports, module) => {
         h2stream.uncork();
       } else {
         socket.cork();
-        socket.write(`${header}content-length: ${contentLength}\r\n\r\n`, "latin1");
+        socket.write(`${header}content-length: ${contentLength}\r
+\r
+`, "latin1");
         socket.write(buffer);
         socket.uncork();
       }
@@ -8204,13 +8227,18 @@ var require_client = __commonJS((exports, module) => {
           socket[kReset] = true;
         }
         if (contentLength === null) {
-          socket.write(`${header}transfer-encoding: chunked\r\n`, "latin1");
+          socket.write(`${header}transfer-encoding: chunked\r
+`, "latin1");
         } else {
-          socket.write(`${header}content-length: ${contentLength}\r\n\r\n`, "latin1");
+          socket.write(`${header}content-length: ${contentLength}\r
+\r
+`, "latin1");
         }
       }
       if (contentLength === null) {
-        socket.write(`\r\n${len.toString(16)}\r\n`, "latin1");
+        socket.write(`\r
+${len.toString(16)}\r
+`, "latin1");
       }
       this.bytesWritten += len;
       const ret = socket.write(chunk);
@@ -8237,12 +8265,18 @@ var require_client = __commonJS((exports, module) => {
       }
       if (bytesWritten === 0) {
         if (expectsPayload) {
-          socket.write(`${header}content-length: 0\r\n\r\n`, "latin1");
+          socket.write(`${header}content-length: 0\r
+\r
+`, "latin1");
         } else {
-          socket.write(`${header}\r\n`, "latin1");
+          socket.write(`${header}\r
+`, "latin1");
         }
       } else if (contentLength === null) {
-        socket.write("\r\n0\r\n\r\n", "latin1");
+        socket.write(`\r
+0\r
+\r
+`, "latin1");
       }
       if (contentLength !== null && bytesWritten !== contentLength) {
         if (client[kStrictContentLength]) {
@@ -8898,8 +8932,7 @@ var require_readable = __commonJS((exports, module) => {
   var kBody = Symbol("kBody");
   var kAbort = Symbol("abort");
   var kContentType = Symbol("kContentType");
-  var noop = () => {
-  };
+  var noop = () => {};
   module.exports = class BodyReadable extends Readable {
     constructor({
       resume,
@@ -9075,8 +9108,7 @@ var require_readable = __commonJS((exports, module) => {
       });
     }
     consume2.stream.resume();
-    while (consume2.stream.read() != null) {
-    }
+    while (consume2.stream.read() != null) {}
   }
   function consumeEnd(consume2) {
     const { type, body, resolve, stream, length } = consume2;
@@ -9160,8 +9192,7 @@ var require_util3 = __commonJS((exports, module) => {
         process.nextTick(callback, new ResponseStatusCodeError(`Response status code ${statusCode}${statusMessage ? `: ${statusMessage}` : ""}`, statusCode, headers, payload));
         return;
       }
-    } catch (err) {
-    }
+    } catch (err) {}
     process.nextTick(callback, new ResponseStatusCodeError(`Response status code ${statusCode}${statusMessage ? `: ${statusMessage}` : ""}`, statusCode, headers));
   }
   module.exports = { getResolveErrorBodyCallback };
@@ -10163,8 +10194,7 @@ var require_mock_utils = __commonJS((exports, module) => {
       handler.onComplete(responseTrailers);
       deleteMockDispatch(mockDispatches, key);
     }
-    function resume() {
-    }
+    function resume() {}
     return true;
   }
   function buildMockDispatch() {
@@ -10512,7 +10542,7 @@ var require_pending_interceptors_formatter = __commonJS((exports, module) => {
         Origin: origin,
         Path: path,
         "Status code": statusCode,
-        Persistent: persist ? "\u2705" : "\u274C",
+        Persistent: persist ? "✅" : "❌",
         Invocations: timesInvoked,
         Remaining: persist ? Infinity : times - timesInvoked
       }));
@@ -10744,8 +10774,7 @@ var require_proxy_agent = __commonJS((exports, module) => {
               }
             });
             if (statusCode !== 200) {
-              socket.on("error", () => {
-              }).destroy();
+              socket.on("error", () => {}).destroy();
               callback(new RequestAbortedError(`Proxy response (${statusCode}) !== 200 when HTTP Tunneling`));
             }
             if (opts2.protocol !== "https:") {
@@ -11162,8 +11191,7 @@ var require_headers = __commonJS((exports, module) => {
     }
     if (headers[kGuard] === "immutable") {
       throw new TypeError("immutable");
-    } else if (headers[kGuard] === "request-no-cors") {
-    }
+    } else if (headers[kGuard] === "request-no-cors") {}
     return headers[kHeadersList].append(name, value);
   }
 
@@ -11274,8 +11302,7 @@ var require_headers = __commonJS((exports, module) => {
       }
       if (this[kGuard] === "immutable") {
         throw new TypeError("immutable");
-      } else if (this[kGuard] === "request-no-cors") {
-      }
+      } else if (this[kGuard] === "request-no-cors") {}
       if (!this[kHeadersList].contains(name)) {
         return;
       }
@@ -11328,8 +11355,7 @@ var require_headers = __commonJS((exports, module) => {
       }
       if (this[kGuard] === "immutable") {
         throw new TypeError("immutable");
-      } else if (this[kGuard] === "request-no-cors") {
-      }
+      } else if (this[kGuard] === "request-no-cors") {}
       this[kHeadersList].set(name, value);
     }
     getSetCookie() {
@@ -12004,8 +12030,7 @@ var require_request2 = __commonJS((exports, module) => {
             } else if (getEventListeners(signal, "abort").length >= defaultMaxListeners) {
               setMaxListeners(100, signal);
             }
-          } catch {
-          }
+          } catch {}
           util.addAbortListener(signal, abort);
           requestFinalizer.register(ac, { signal, abort });
         }
@@ -12594,10 +12619,8 @@ var require_fetch = __commonJS((exports, module) => {
     if (!request.headersList.contains("accept-language")) {
       request.headersList.append("accept-language", "*");
     }
-    if (request.priority === null) {
-    }
-    if (subresourceSet.has(request.destination)) {
-    }
+    if (request.priority === null) {}
+    if (subresourceSet.has(request.destination)) {}
     mainFetch(fetchParams).catch((err) => {
       fetchParams.controller.terminate(err);
     });
@@ -12647,8 +12670,7 @@ var require_fetch = __commonJS((exports, module) => {
       return response;
     }
     if (response.status !== 0 && !response.internalResponse) {
-      if (request.responseTainting === "cors") {
-      }
+      if (request.responseTainting === "cors") {}
       if (request.responseTainting === "basic") {
         response = filterResponse(response, "basic");
       } else if (request.responseTainting === "cors") {
@@ -12784,8 +12806,7 @@ var require_fetch = __commonJS((exports, module) => {
         controller.enqueue(chunk);
       };
       const transformStream = new TransformStream({
-        start() {
-        },
+        start() {},
         transform: identityTransformAlgorithm,
         flush: processResponseEndOfBody
       }, {
@@ -12815,8 +12836,7 @@ var require_fetch = __commonJS((exports, module) => {
     let response = null;
     let actualResponse = null;
     const timingInfo = fetchParams.timingInfo;
-    if (request.serviceWorkers === "all") {
-    }
+    if (request.serviceWorkers === "all") {}
     if (response === null) {
       if (request.redirect === "follow") {
         request.serviceWorkers = "none";
@@ -12930,8 +12950,7 @@ var require_fetch = __commonJS((exports, module) => {
     if (contentLengthHeaderValue != null) {
       httpRequest.headersList.append("content-length", contentLengthHeaderValue);
     }
-    if (contentLength != null && httpRequest.keepalive) {
-    }
+    if (contentLength != null && httpRequest.keepalive) {}
     if (httpRequest.referrer instanceof URL) {
       httpRequest.headersList.append("referer", isomorphicEncode(httpRequest.referrer.href));
     }
@@ -12965,22 +12984,18 @@ var require_fetch = __commonJS((exports, module) => {
       }
     }
     httpRequest.headersList.delete("host");
-    if (includeCredentials) {
-    }
+    if (includeCredentials) {}
     if (httpCache == null) {
       httpRequest.cache = "no-store";
     }
-    if (httpRequest.mode !== "no-store" && httpRequest.mode !== "reload") {
-    }
+    if (httpRequest.mode !== "no-store" && httpRequest.mode !== "reload") {}
     if (response == null) {
       if (httpRequest.mode === "only-if-cached") {
         return makeNetworkError("only if cached");
       }
       const forwardResponse = await httpNetworkFetch(httpFetchParams, includeCredentials, isNewConnectionFetch);
-      if (!safeMethodsSet.has(httpRequest.method) && forwardResponse.status >= 200 && forwardResponse.status <= 399) {
-      }
-      if (revalidatingFlag && forwardResponse.status === 304) {
-      }
+      if (!safeMethodsSet.has(httpRequest.method) && forwardResponse.status >= 200 && forwardResponse.status <= 399) {}
+      if (revalidatingFlag && forwardResponse.status === 304) {}
       if (response == null) {
         response = forwardResponse;
       }
@@ -13006,8 +13021,7 @@ var require_fetch = __commonJS((exports, module) => {
       fetchParams.controller.connection.destroy();
       response = await httpNetworkOrCacheFetch(fetchParams, isAuthenticationFetch, true);
     }
-    if (isAuthenticationFetch) {
-    }
+    if (isAuthenticationFetch) {}
     return response;
   }
   async function httpNetworkFetch(fetchParams, includeCredentials = false, forceNewConnection = false) {
@@ -13030,9 +13044,7 @@ var require_fetch = __commonJS((exports, module) => {
       request.cache = "no-store";
     }
     const newConnection = forceNewConnection ? "yes" : "no";
-    if (request.mode === "websocket") {
-    } else {
-    }
+    if (request.mode === "websocket") {} else {}
     let requestBody = null;
     if (request.body == null && fetchParams.processRequestEndOfBody) {
       queueMicrotask(() => fetchParams.processRequestEndOfBody());
@@ -13247,9 +13259,7 @@ var require_fetch = __commonJS((exports, module) => {
             status,
             statusText,
             headersList: headers[kHeadersList],
-            body: decoders.length ? pipeline(this.body, ...decoders, () => {
-            }) : this.body.on("error", () => {
-            })
+            body: decoders.length ? pipeline(this.body, ...decoders, () => {}) : this.body.on("error", () => {})
           });
           return true;
         },
@@ -15504,8 +15514,7 @@ var require_connection = __commonJS((exports, module) => {
   var crypto;
   try {
     crypto = __require("crypto");
-  } catch {
-  }
+  } catch {}
   function establishWebSocketConnection(url, protocols, ws, onEstablish, options) {
     const requestURL = url;
     requestURL.protocol = url.protocol === "ws:" ? "http:" : "https:";
@@ -15631,8 +15640,7 @@ var require_frame = __commonJS((exports, module) => {
   var crypto;
   try {
     crypto = __require("crypto");
-  } catch {
-  }
+  } catch {}
 
   class WebsocketFrameSend {
     constructor(data) {
@@ -15994,8 +16002,7 @@ var require_websocket = __commonJS((exports, module) => {
           throw new DOMException2(`Reason must be less than 123 bytes; received ${reasonByteLength}`, "SyntaxError");
         }
       }
-      if (this[kReadyState] === WebSocket.CLOSING || this[kReadyState] === WebSocket.CLOSED) {
-      } else if (!isEstablished(this)) {
+      if (this[kReadyState] === WebSocket.CLOSING || this[kReadyState] === WebSocket.CLOSED) {} else if (!isEstablished(this)) {
         failWebsocketConnection(this, "Connection was closed before it was established.");
         this[kReadyState] = WebSocket.CLOSING;
       } else if (!isClosing(this)) {
@@ -16975,8 +16982,7 @@ var require_lib = __commonJS((exports) => {
               response.result = obj;
             }
             response.headers = res.message.headers;
-          } catch (err) {
-          }
+          } catch (err) {}
           if (statusCode > 299) {
             let msg;
             if (obj && obj.message) {
@@ -17159,8 +17165,10 @@ var require_oidc_utils = __commonJS((exports) => {
       return __awaiter(this, undefined, undefined, function* () {
         const httpclient = OidcClient.createHttpClient();
         const res = yield httpclient.getJson(id_token_url).catch((error) => {
-          throw new Error(`Failed to get ID Token. \n 
-        Error Code : ${error.statusCode}\n 
+          throw new Error(`Failed to get ID Token. 
+ 
+        Error Code : ${error.statusCode}
+ 
         Error Message: ${error.message}`);
         });
         const id_token = (_a = res.result) === null || _a === undefined ? undefined : _a.value;
@@ -17239,7 +17247,7 @@ var require_summary = __commonJS((exports) => {
         }
         const pathFromEnv = process.env[exports.SUMMARY_ENV_VAR];
         if (!pathFromEnv) {
-          throw new Error(`Unable to find environment variable for \$${exports.SUMMARY_ENV_VAR}. Check if your runtime environment supports job summaries.`);
+          throw new Error(`Unable to find environment variable for $${exports.SUMMARY_ENV_VAR}. Check if your runtime environment supports job summaries.`);
         }
         try {
           yield access(pathFromEnv, fs_1.constants.R_OK | fs_1.constants.W_OK);
@@ -18514,7 +18522,8 @@ var require_platform = __commonJS((exports) => {
     const { stdout } = yield exec.getExecOutput("lsb_release", ["-i", "-r", "-s"], {
       silent: true
     });
-    const [name, version] = stdout.trim().split("\n");
+    const [name, version] = stdout.trim().split(`
+`);
     return {
       name,
       version
@@ -18649,7 +18658,8 @@ var require_core = __commonJS((exports) => {
   }
   exports.getInput = getInput;
   function getMultilineInput(name, options) {
-    const inputs = getInput(name, options).split("\n").filter((x) => x !== "");
+    const inputs = getInput(name, options).split(`
+`).filter((x) => x !== "");
     if (options && options.trimWhitespace === false) {
       return inputs;
     }
@@ -18664,7 +18674,8 @@ var require_core = __commonJS((exports) => {
       return true;
     if (falseValue.includes(val))
       return false;
-    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}\n` + `Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
+    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}
+` + `Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
   }
   exports.getBooleanInput = getBooleanInput;
   function setOutput(name, value) {
@@ -19090,7 +19101,7 @@ var require_dist_node2 = __commonJS((exports, module) => {
   });
   module.exports = __toCommonJS(dist_src_exports);
   var import_universal_user_agent = require_dist_node();
-  var VERSION = "9.0.5";
+  var VERSION = "9.0.6";
   var userAgent = `octokit-endpoint.js/${VERSION} ${(0, import_universal_user_agent.getUserAgent)()}`;
   var DEFAULTS = {
     method: "GET",
@@ -19177,9 +19188,9 @@ var require_dist_node2 = __commonJS((exports, module) => {
       return `${name}=${encodeURIComponent(parameters[name])}`;
     }).join("&");
   }
-  var urlVariableRegex = /\{[^}]+\}/g;
+  var urlVariableRegex = /\{[^{}}]+\}/g;
   function removeNonChars(variableName) {
-    return variableName.replace(/^\W+|\W+$/g, "").split(/,/);
+    return variableName.replace(/(?:^\W+)|(?:(?<!\W)\W+$)/g, "").split(/,/);
   }
   function extractUrlVariableNames(url) {
     const matches = url.match(urlVariableRegex);
@@ -19343,11 +19354,11 @@ var require_dist_node2 = __commonJS((exports, module) => {
     const isBinaryRequest = /application\/octet-stream/i.test(headers.accept);
     if (!isBinaryRequest) {
       if (options.mediaType.format) {
-        headers.accept = headers.accept.split(/,/).map((format) => format.replace(/application\/vnd(\.\w+)(\.v3)?(\.\w+)?(\+json)?$/, `application/vnd\$1\$2.${options.mediaType.format}`)).join(",");
+        headers.accept = headers.accept.split(/,/).map((format) => format.replace(/application\/vnd(\.\w+)(\.v3)?(\.\w+)?(\+json)?$/, `application/vnd$1$2.${options.mediaType.format}`)).join(",");
       }
       if (url.endsWith("/graphql")) {
         if (options.mediaType.previews?.length) {
-          const previewsFromAcceptHeader = headers.accept.match(/[\w-]+(?=-preview)/g) || [];
+          const previewsFromAcceptHeader = headers.accept.match(/(?<![\w-])[\w-]+(?=-preview)/g) || [];
           headers.accept = previewsFromAcceptHeader.concat(options.mediaType.previews).map((preview) => {
             const format = options.mediaType.format ? `.${options.mediaType.format}` : "+json";
             return `application/vnd.github.${preview}-preview${format}`;
@@ -19528,7 +19539,7 @@ var require_dist_node4 = __commonJS((exports, module) => {
       const requestCopy = Object.assign({}, options.request);
       if (options.request.headers.authorization) {
         requestCopy.headers = Object.assign({}, options.request.headers, {
-          authorization: options.request.headers.authorization.replace(/ .*$/, " [REDACTED]")
+          authorization: options.request.headers.authorization.replace(/(?<! ) .*$/, " [REDACTED]")
         });
       }
       requestCopy.url = requestCopy.url.replace(/\bclient_secret=\w+/g, "client_secret=[REDACTED]").replace(/\baccess_token=\w+/g, "access_token=[REDACTED]");
@@ -19575,7 +19586,7 @@ var require_dist_node5 = __commonJS((exports, module) => {
   module.exports = __toCommonJS(dist_src_exports);
   var import_endpoint = require_dist_node2();
   var import_universal_user_agent = require_dist_node();
-  var VERSION = "8.4.0";
+  var VERSION = "8.4.1";
   function isPlainObject(value) {
     if (typeof value !== "object" || value === null)
       return false;
@@ -19622,7 +19633,7 @@ var require_dist_node5 = __commonJS((exports, module) => {
         headers[keyAndValue[0]] = keyAndValue[1];
       }
       if ("deprecation" in headers) {
-        const matches = headers.link && headers.link.match(/<([^>]+)>; rel="deprecation"/);
+        const matches = headers.link && headers.link.match(/<([^<>]+)>; rel="deprecation"/);
         const deprecationLink = matches && matches.pop();
         log.warn(`[@octokit/request] "${requestOptions.method} ${requestOptions.url}" is deprecated. It is scheduled to be removed on ${headers.sunset}${deprecationLink ? `. See ${deprecationLink}` : ""}`);
       }
@@ -19767,21 +19778,22 @@ var require_dist_node6 = __commonJS((exports, module) => {
     return to;
   };
   var __toCommonJS = (mod) => __copyProps(__defProp2({}, "__esModule", { value: true }), mod);
-  var dist_src_exports = {};
-  __export(dist_src_exports, {
+  var index_exports = {};
+  __export(index_exports, {
     GraphqlResponseError: () => GraphqlResponseError,
     graphql: () => graphql2,
     withCustomRequest: () => withCustomRequest
   });
-  module.exports = __toCommonJS(dist_src_exports);
+  module.exports = __toCommonJS(index_exports);
   var import_request3 = require_dist_node5();
   var import_universal_user_agent = require_dist_node();
-  var VERSION = "7.1.0";
+  var VERSION = "7.1.1";
   var import_request2 = require_dist_node5();
   var import_request = require_dist_node5();
   function _buildMessageForResponseErrors(data) {
     return `Request failed due to following response errors:
-` + data.errors.map((e) => ` - ${e.message}`).join("\n");
+` + data.errors.map((e) => ` - ${e.message}`).join(`
+`);
   }
   var GraphqlResponseError = class extends Error {
     constructor(request2, headers, response) {
@@ -19964,8 +19976,7 @@ var require_dist_node8 = __commonJS((exports, module) => {
   var import_graphql = require_dist_node6();
   var import_auth_token = require_dist_node7();
   var VERSION = "5.2.0";
-  var noop = () => {
-  };
+  var noop = () => {};
   var consoleWarn = console.warn.bind(console);
   var consoleError = console.error.bind(console);
   var userAgentTrail = `octokit-core.js/${VERSION} ${(0, import_universal_user_agent.getUserAgent)()}`;
@@ -22225,7 +22236,7 @@ var require_dist_node10 = __commonJS((exports, module) => {
     paginatingEndpoints: () => paginatingEndpoints
   });
   module.exports = __toCommonJS(dist_src_exports);
-  var VERSION = "9.2.1";
+  var VERSION = "9.2.2";
   function normalizePaginatedListResponse(response) {
     if (!response.data) {
       return {
@@ -22268,7 +22279,7 @@ var require_dist_node10 = __commonJS((exports, module) => {
           try {
             const response = await requestMethod({ method, url, headers });
             const normalizedResponse = normalizePaginatedListResponse(response);
-            url = ((normalizedResponse.headers.link || "").match(/<([^>]+)>;\s*rel="next"/) || [])[1];
+            url = ((normalizedResponse.headers.link || "").match(/<([^<>]+)>;\s*rel="next"/) || [])[1];
             return { value: normalizedResponse };
           } catch (error) {
             if (error.status !== 409)
@@ -22685,13 +22696,46 @@ var import_core = __toESM(require_core(), 1);
 var import_github = __toESM(require_github(), 1);
 
 // src/queries/GetFileContentAtCommit.graphql
-var GetFileContentAtCommit_default = "query GetFileContentAtCommit($owner: String!, $repo: String!, $expression: String!) {\n    repository(owner: $owner, name: $repo) {\n        object(expression: $expression) {\n            ... on Blob {\n                text\n            }\n        }\n    }\n}\n";
+var GetFileContentAtCommit_default = `query GetFileContentAtCommit($owner: String!, $repo: String!, $expression: String!) {
+    repository(owner: $owner, name: $repo) {
+        object(expression: $expression) {
+            ... on Blob {
+                text
+            }
+        }
+    }
+}
+`;
 
 // src/queries/GetPullRequestChangedFiles.graphql
-var GetPullRequestChangedFiles_default = "query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!) {\n    repository(owner: $owner, name: $repo) {\n        pullRequest(number: $prNumber) {\n            files(first: 100) {\n                totalCount\n                pageInfo {\n                    endCursor\n                    hasNextPage\n                }\n                nodes {\n                    path\n                }\n            }\n        }\n    }\n}\n";
+var GetPullRequestChangedFiles_default = `query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!) {
+    repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+            files(first: 100) {
+                totalCount
+                pageInfo {
+                    endCursor
+                    hasNextPage
+                }
+                nodes {
+                    path
+                }
+            }
+        }
+    }
+}
+`;
 
 // src/queries/GetPullRequestRefs.graphql
-var GetPullRequestRefs_default = "query GetPullRequestRefs($owner: String!, $repo: String!, $prNumber: Int!) {\n    repository(owner: $owner, name: $repo) {\n        pullRequest(number: $prNumber) {\n            baseRefOid\n            headRefOid\n        }\n    }\n}\n";
+var GetPullRequestRefs_default = `query GetPullRequestRefs($owner: String!, $repo: String!, $prNumber: Int!) {
+    repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+            baseRefOid
+            headRefOid
+        }
+    }
+}
+`;
 
 // src/api.ts
 function getGithubClient() {
@@ -22742,7 +22786,8 @@ async function compareCommits(owner, repo, base, head) {
   });
   return compareData.commits.map((commit) => ({
     sha: commit.sha,
-    message: commit.commit.message.split("\n")[0],
+    message: commit.commit.message.split(`
+`)[0],
     url: commit.html_url
   }));
 }
@@ -22820,7 +22865,7 @@ async function run() {
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       for (const commit of commits) {
         import_core2.default.info(`Checking for PRs associated with commit ${commit.sha}`);
-        const commitMessage = commit.message.replace(/@/g, "@\u200D");
+        const commitMessage = commit.message.replace(/@/g, "@‍");
         const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
         const commitListItem = `- [${commitMessage}](${commitUrl})`;
         const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
@@ -22837,7 +22882,8 @@ async function run() {
     }
   }
   import_core2.default.info("Writing result file");
-  await writeResultFile(result.join("\n"));
+  await writeResultFile(result.join(`
+`));
   import_core2.default.info("Done");
 }
 
