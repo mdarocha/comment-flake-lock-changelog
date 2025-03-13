@@ -14,6 +14,7 @@ async function writeResultFile(content: string): Promise<void> {
 }
 
 interface LockfileItem {
+    type: string;
     owner: string;
     repo: string;
     rev: string;
@@ -31,11 +32,13 @@ function parseLockfile(content: string): Lockfile {
         locked: LockfileItem;
     }>(data.nodes)
         .filter((entry) => entry[0] !== "root")
+        .filter((entry) => entry[1]["locked"]["type"] === "github")
         .map(
             (entry) =>
                 [
                     entry[0],
                     {
+                        type: entry[1]["locked"]["type"],
                         owner: entry[1]["locked"]["owner"],
                         repo: entry[1]["locked"]["repo"],
                         rev: entry[1]["locked"]["rev"],
@@ -53,7 +56,8 @@ function parseLockfile(content: string): Lockfile {
 
 function getLockfileDiffs(before: Lockfile, after: Lockfile): Array<LockfileItem & { beforeRev: string }> {
     return Object.entries(after)
-        .filter(([key, value]) => before[key] && before[key].rev !== value.rev)
+        .filter(([_key, value]) => value.type === "github")
+        .filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev)
         .map(([key, value]) => ({
             ...value,
             beforeRev: before[key].rev,

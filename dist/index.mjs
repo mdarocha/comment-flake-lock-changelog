@@ -22772,9 +22772,10 @@ function parseLockfile(content) {
     return {};
   }
   const data = JSON.parse(content);
-  return Object.entries(data.nodes).filter((entry) => entry[0] !== "root").map((entry) => [
+  return Object.entries(data.nodes).filter((entry) => entry[0] !== "root").filter((entry) => entry[1]["locked"]["type"] === "github").map((entry) => [
     entry[0],
     {
+      type: entry[1]["locked"]["type"],
       owner: entry[1]["locked"]["owner"],
       repo: entry[1]["locked"]["repo"],
       rev: entry[1]["locked"]["rev"]
@@ -22785,7 +22786,7 @@ function parseLockfile(content) {
   }), {});
 }
 function getLockfileDiffs(before, after) {
-  return Object.entries(after).filter(([key, value]) => before[key] && before[key].rev !== value.rev).map(([key, value]) => ({
+  return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => ({
     ...value,
     beforeRev: before[key].rev
   }));
