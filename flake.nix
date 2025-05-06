@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
     flake-parts.url = "github:hercules-ci/flake-parts";
     devenv.url = "github:cachix/devenv";
   };
@@ -12,11 +12,11 @@
       systems = inputs.nixpkgs.lib.systems.flakeExposed;
 
       perSystem =
-        args@{ pkgs, ... }:
+        { pkgs, ... }:
         {
           formatter = pkgs.nixfmt-rfc-style;
 
-          devenv.shells.default = import ./devenv.nix args;
+          devenv.shells.default = import ./devenv.nix { inherit pkgs; };
         };
     };
 }
