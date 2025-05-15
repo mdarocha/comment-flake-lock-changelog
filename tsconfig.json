@@ -29,7 +29,7 @@
     "noImplicitOverride": true,
     "noImplicitReturns": true,
 
-    "types": ["bun-types/globals"],
+    "types": ["bun"],
     "paths": {
       "~/*": ["./src/*"]
     }
