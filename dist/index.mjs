@@ -18806,6 +18806,7 @@ var require_context = __commonJS((exports) => {
       this.action = process.env.GITHUB_ACTION;
       this.actor = process.env.GITHUB_ACTOR;
       this.job = process.env.GITHUB_JOB;
+      this.runAttempt = parseInt(process.env.GITHUB_RUN_ATTEMPT, 10);
       this.runNumber = parseInt(process.env.GITHUB_RUN_NUMBER, 10);
       this.runId = parseInt(process.env.GITHUB_RUN_ID, 10);
       this.apiUrl = (_a = process.env.GITHUB_API_URL) !== null && _a !== undefined ? _a : `https://api.github.com`;
