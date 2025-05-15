@@ -33,3 +33,17 @@ jobs:
         if: ${{ steps.update-flake-lock.outputs.pull-request-number != 0 }}
         with:
           pull-request-number: ${{ steps.update-flake-lock.outputs.pull-request-number }}
+
+      - name: Trigger bot automations
+        if: ${{ steps.update-flake-lock.outputs.pull-request-number != 0 }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment \
+            ${{ steps.update-flake-lock.outputs.pull-request-number }} \
+            --body "@robo-intern[bot] run actions"
+
+          gh pr comment \
+            ${{ steps.update-flake-lock.outputs.pull-request-number }} \
+            --body "@robo-intern[bot] merge"
