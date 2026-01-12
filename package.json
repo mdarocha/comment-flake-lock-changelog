@@ -11,7 +11,7 @@
     "lint:fix": "eslint --fix"
   },
   "devDependencies": {
-    "@trivago/prettier-plugin-sort-imports": "^6.0.1",
+    "@trivago/prettier-plugin-sort-imports": "^6.0.2",
     "@types/bun": "latest",
     "eslint": "^9.39.2",
     "eslint-plugin-github": "^6.0.0",
