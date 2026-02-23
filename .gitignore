@@ -10,3 +10,4 @@ devenv.local.nix
 
 # bun
 node_modules
+package-lock.json
