@@ -15,10 +15,12 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
 
-      - name: Setup Cachix
-        uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
-        with:
-          name: devenv
+      - name: Setup cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Build devenv shell and run any hooks & tests
-        run: nix develop --no-pure-eval --command bash -c 'devenv test'
+        run: |
+          nix --accept-flake-config develop \
+            --no-pure-eval \
+            --command bash -c \
+            'devenv test'

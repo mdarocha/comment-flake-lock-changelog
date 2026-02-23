@@ -66,17 +66,29 @@ export async function compareCommits(
     head: string,
 ): Promise<Array<{ sha: string; message: string; url: string }>> {
     const client = getGithubClient();
-    const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
-        owner,
-        repo,
-        basehead: `${base}...${head}`,
-    });
 
-    return compareData.commits.map((commit) => ({
-        sha: commit.sha,
-        message: commit.commit.message.split("\n")[0],
-        url: commit.html_url,
-    }));
+    try {
+        const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
+            owner,
+            repo,
+            basehead: `${base}...${head}`,
+        });
+
+        return compareData.commits.map((commit) => ({
+            sha: commit.sha,
+            message: commit.commit.message.split("\n")[0],
+            url: commit.html_url,
+        }));
+    } catch (error) {
+        if (error instanceof Error && error.message.includes("No common ancestor")) {
+            core.warning(
+                `No common ancestor between ${base} and ${head} in ${owner}/${repo}. ` +
+                    "The repository history may have been rewritten. Skipping commit changelog for this input.",
+            );
+            return [];
+        }
+        throw error;
+    }
 }
 
 // TODO tests

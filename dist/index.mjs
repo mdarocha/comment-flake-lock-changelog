@@ -22780,17 +22780,25 @@ async function getFileContentAtCommit(commit, path) {
 }
 async function compareCommits(owner, repo, base, head) {
   const client = getGithubClient();
-  const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
-    owner,
-    repo,
-    basehead: `${base}...${head}`
-  });
-  return compareData.commits.map((commit) => ({
-    sha: commit.sha,
-    message: commit.commit.message.split(`
+  try {
+    const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${base}...${head}`
+    });
+    return compareData.commits.map((commit) => ({
+      sha: commit.sha,
+      message: commit.commit.message.split(`
 `)[0],
-    url: commit.html_url
-  }));
+      url: commit.html_url
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("No common ancestor")) {
+      import_core.default.warning(`No common ancestor between ${base} and ${head} in ${owner}/${repo}. ` + "The repository history may have been rewritten. Skipping commit changelog for this input.");
+      return [];
+    }
+    throw error;
+  }
 }
 async function getPullRequestForCommit(owner, repo, commit) {
   const client = getGithubClient();
@@ -22864,6 +22872,9 @@ async function run() {
       result.push("");
       result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
+      if (commits.length === 0) {
+        result.push(`> **Note:** Could not generate a detailed changelog — the commits have no common ancestor. ` + `The repository history may have been rewritten.`);
+      }
       for (const commit of commits) {
         import_core2.default.info(`Checking for PRs associated with commit ${commit.sha}`);
         const commitMessage = commit.message.replace(/@/g, "@‍");

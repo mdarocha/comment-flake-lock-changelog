@@ -105,6 +105,14 @@ export async function run(): Promise<void> {
             );
 
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
+
+            if (commits.length === 0) {
+                result.push(
+                    `> **Note:** Could not generate a detailed changelog — the commits have no common ancestor. ` +
+                        `The repository history may have been rewritten.`,
+                );
+            }
+
             for (const commit of commits) {
                 core.info(`Checking for PRs associated with commit ${commit.sha}`);
 
