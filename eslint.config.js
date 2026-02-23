@@ -10,6 +10,7 @@ export default [
         rules: {
             "no-restricted-imports": ["error", { patterns: [".*"] }],
             "import/no-unresolved": "off",
+            "import/no-namespace": "off",
             "import/extensions": ["error", "never", { graphql: "always" }],
             "i18n-text/no-en": "off",
             "@typescript-eslint/no-unused-vars": [

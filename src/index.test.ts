@@ -30,7 +30,7 @@ test("should call setFailed if run() throws an error", async (done) => {
         done();
     });
     using _actionsCoreMock = await mockModule("@actions/core", () => ({
-        default: { setFailed },
+        setFailed,
     }));
 
     await import("./index");

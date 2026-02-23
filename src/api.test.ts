@@ -103,19 +103,15 @@ beforeEach(async () => {
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
-            default: {
-                getInput: mock((input: string) => (input === "token" ? testToken : "")),
-                warning: logMock,
-            },
+            getInput: mock((input: string) => (input === "token" ? testToken : "")),
+            warning: logMock,
         })),
         await mockModule("@actions/github", () => ({
-            default: {
-                getOctokit: mock((token: string) => (token === testToken ? mockOctokit : null)),
-                context: {
-                    repo: {
-                        owner: "test_owner",
-                        repo: "test_repo",
-                    },
+            getOctokit: mock((token: string) => (token === testToken ? mockOctokit : null)),
+            context: {
+                repo: {
+                    owner: "test_owner",
+                    repo: "test_repo",
                 },
             },
         })),
