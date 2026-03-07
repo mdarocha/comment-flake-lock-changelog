@@ -27,7 +27,9 @@
         {
           formatter = pkgs.nixfmt-rfc-style;
 
-          devenv.shells.default = import ./devenv.nix { inherit pkgs; };
+          devenv.shells.default = {
+            imports = [ ./devenv.nix ];
+          };
         };
     };
 }
