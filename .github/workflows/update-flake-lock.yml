@@ -29,11 +29,6 @@ jobs:
           pr-title: "Update flake.lock"
           pr-labels: automated
 
-      - uses: mdarocha/comment-flake-lock-changelog@01f15532c0394bec8f185f1e24e2b19f8bb12977 # v0.9.2
-        if: ${{ steps.update-flake-lock.outputs.pull-request-number != 0 }}
-        with:
-          pull-request-number: ${{ steps.update-flake-lock.outputs.pull-request-number }}
-
       - name: Trigger bot automations
         if: ${{ steps.update-flake-lock.outputs.pull-request-number != 0 }}
         shell: bash
