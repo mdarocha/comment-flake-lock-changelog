@@ -1,17 +1,12 @@
 import * as core from "@actions/core";
-import { writeFile } from "node:fs/promises";
 import {
     compareCommits,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
     getPullRequestForCommit,
     getPullRequestRefs,
+    upsertComment,
 } from "~/api";
-
-async function writeResultFile(content: string): Promise<void> {
-    const path = `${process.env["RUNNER_TEMP"]}/comment-flake-lock-changelog-result.md`;
-    await writeFile(path, content);
-}
 
 interface LockfileItem {
     type: string;
@@ -141,7 +136,7 @@ export async function run(): Promise<void> {
         }
     }
 
-    core.info("Writing result file");
-    await writeResultFile(result.join("\n"));
+    core.info("Posting comment to PR");
+    await upsertComment(prNumber, result.join("\n"));
     core.info("Done");
 }

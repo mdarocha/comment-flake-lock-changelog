@@ -18224,9 +18224,6 @@ function info(message) {
   process.stdout.write(message + os3.EOL);
 }
 
-// src/main.ts
-import { writeFile as writeFile2 } from "node:fs/promises";
-
 // node_modules/@actions/github/lib/context.js
 import { readFileSync, existsSync } from "fs";
 import { EOL as EOL4 } from "os";
@@ -21897,6 +21894,41 @@ async function compareCommits(owner, repo, base, head) {
     throw error2;
   }
 }
+var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
+var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+async function upsertComment(prNumber, body) {
+  const client = getGithubClient();
+  const { repo } = context2;
+  const taggedBody = `${body}
+${COMMENT_TAG_PATTERN}`;
+  function hasCommentTag(comment) {
+    return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
+  }
+  let existingComment;
+  for await (const { data: comments } of client.paginate.iterator(client.rest.issues.listComments, {
+    ...repo,
+    issue_number: prNumber
+  })) {
+    existingComment = comments.find(hasCommentTag);
+    if (existingComment)
+      break;
+  }
+  if (existingComment) {
+    info(`Updating existing comment ${existingComment.id}`);
+    await client.rest.issues.updateComment({
+      ...repo,
+      comment_id: existingComment.id,
+      body: taggedBody
+    });
+  } else {
+    info("Creating new comment");
+    await client.rest.issues.createComment({
+      ...repo,
+      issue_number: prNumber,
+      body: taggedBody
+    });
+  }
+}
 async function getPullRequestForCommit(owner, repo, commit) {
   const client = getGithubClient();
   const { data: associatedPRs } = await client.rest.repos.listPullRequestsAssociatedWithCommit({
@@ -21914,10 +21946,6 @@ async function getPullRequestForCommit(owner, repo, commit) {
 }
 
 // src/main.ts
-async function writeResultFile(content) {
-  const path = `${process.env["RUNNER_TEMP"]}/comment-flake-lock-changelog-result.md`;
-  await writeFile2(path, content);
-}
 function parseLockfile(content) {
   if (content === "") {
     return {};
@@ -21990,8 +22018,8 @@ async function run() {
       result.push("");
     }
   }
-  info("Writing result file");
-  await writeResultFile(result.join(`
+  info("Posting comment to PR");
+  await upsertComment(prNumber, result.join(`
 `));
   info("Done");
 }

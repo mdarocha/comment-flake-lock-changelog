@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
+import type { GetResponseDataTypeFromEndpointMethod } from "@octokit/types";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
 import type { GetFileContentAtCommitResponse } from "~/queries/GetFileContentAtCommit.graphql";
 import GetPullRequestChangedFilesQuery from "~/queries/GetPullRequestChangedFiles.graphql" with { type: "text" };
@@ -88,6 +89,50 @@ export async function compareCommits(
             return [];
         }
         throw error;
+    }
+}
+
+const LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
+const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+
+export async function upsertComment(prNumber: number, body: string): Promise<void> {
+    const client = getGithubClient();
+    const { repo } = github.context;
+
+    const taggedBody = `${body}\n${COMMENT_TAG_PATTERN}`;
+
+    function hasCommentTag(comment: { body?: string | null }): boolean {
+        return (
+            comment?.body?.includes(COMMENT_TAG_PATTERN) === true ||
+            comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true
+        );
+    }
+
+    type ListCommentsResponseDataType = GetResponseDataTypeFromEndpointMethod<typeof client.rest.issues.listComments>;
+    let existingComment: ListCommentsResponseDataType[0] | undefined;
+
+    for await (const { data: comments } of client.paginate.iterator(client.rest.issues.listComments, {
+        ...repo,
+        issue_number: prNumber,
+    })) {
+        existingComment = comments.find(hasCommentTag);
+        if (existingComment) break;
+    }
+
+    if (existingComment) {
+        core.info(`Updating existing comment ${existingComment.id}`);
+        await client.rest.issues.updateComment({
+            ...repo,
+            comment_id: existingComment.id,
+            body: taggedBody,
+        });
+    } else {
+        core.info("Creating new comment");
+        await client.rest.issues.createComment({
+            ...repo,
+            issue_number: prNumber,
+            body: taggedBody,
+        });
     }
 }
 
