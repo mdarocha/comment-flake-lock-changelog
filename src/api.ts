@@ -120,7 +120,7 @@ export async function upsertComment(prNumber: number, body: string): Promise<voi
     const client = getGithubClient();
     const { repo } = github.context;
 
-    const wouldExceed = (body + `\n${COMMENT_TAG_PATTERN}`).length > GITHUB_COMMENT_MAX_LENGTH;
+    const wouldExceed = `${body}\n${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
     if (wouldExceed) {
         core.warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
     }
