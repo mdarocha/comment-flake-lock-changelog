@@ -4,15 +4,29 @@ var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+function __accessProp(key) {
+  return this[key];
+}
+var __toESMCache_node;
+var __toESMCache_esm;
 var __toESM = (mod, isNodeMode, target) => {
+  var canCache = mod != null && typeof mod === "object";
+  if (canCache) {
+    var cache = isNodeMode ? __toESMCache_node ??= new WeakMap : __toESMCache_esm ??= new WeakMap;
+    var cached = cache.get(mod);
+    if (cached)
+      return cached;
+  }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
   for (let key of __getOwnPropNames(mod))
     if (!__hasOwnProp.call(to, key))
       __defProp(to, key, {
-        get: () => mod[key],
+        get: __accessProp.bind(mod, key),
         enumerable: true
       });
+  if (canCache)
+    cache.set(mod, to);
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
@@ -21896,11 +21910,30 @@ async function compareCommits(owner, repo, base, head) {
 }
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+var GITHUB_COMMENT_MAX_LENGTH = 65536;
+var TRUNCATION_NOTICE = `
+
+> [!NOTE]
+> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
+function buildCommentBody(body) {
+  const tag = `
+${COMMENT_TAG_PATTERN}`;
+  const full = `${body}${tag}`;
+  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
+    return full;
+  }
+  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
+  return `${body.slice(0, available)}${TRUNCATION_NOTICE}${tag}`;
+}
 async function upsertComment(prNumber, body) {
   const client = getGithubClient();
   const { repo } = context2;
-  const taggedBody = `${body}
-${COMMENT_TAG_PATTERN}`;
+  const wouldExceed = (body + `
+${COMMENT_TAG_PATTERN}`).length > GITHUB_COMMENT_MAX_LENGTH;
+  if (wouldExceed) {
+    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
+  }
+  const taggedBody = buildCommentBody(body);
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
