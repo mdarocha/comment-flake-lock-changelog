@@ -21896,11 +21896,30 @@ async function compareCommits(owner, repo, base, head) {
 }
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+var GITHUB_COMMENT_MAX_LENGTH = 65536;
+var TRUNCATION_NOTICE = `
+
+> [!NOTE]
+> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
+function buildCommentBody(body) {
+  const tag = `
+${COMMENT_TAG_PATTERN}`;
+  const full = `${body}${tag}`;
+  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
+    return full;
+  }
+  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
+  return `${body.slice(0, available)}${TRUNCATION_NOTICE}${tag}`;
+}
 async function upsertComment(prNumber, body) {
   const client = getGithubClient();
   const { repo } = context2;
-  const taggedBody = `${body}
-${COMMENT_TAG_PATTERN}`;
+  const wouldExceed = `${body}
+${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
+  if (wouldExceed) {
+    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
+  }
+  const taggedBody = buildCommentBody(body);
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
