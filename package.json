@@ -23,7 +23,7 @@
   "dependencies": {
     "@actions/core": "3.0.1",
     "@actions/github": "9.0.0",
-    "baseline-browser-mapping": "^2.10.31",
-    "caniuse-lite": "^1.0.30001793"
+    "baseline-browser-mapping": "2.10.31",
+    "caniuse-lite": "1.0.30001793"
   }
 }
