@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import {
+    GITHUB_COMMENT_MAX_LENGTH,
     compareCommits,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
@@ -65,6 +66,10 @@ export async function run(): Promise<void> {
         throw new Error(`Invalid pull request number: ${prNumber}`);
     }
 
+    // Space reserved for the identity tag appended by upsertComment and a truncation notice.
+    // This covers: tag (~48 chars) + "> [!NOTE]\n> N more commit(s) ..." (~250 chars) + small buffer.
+    const COMMIT_TRUNCATION_OVERHEAD = 350;
+
     const result = ["# Flake inputs changelog"];
 
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -102,14 +107,20 @@ export async function run(): Promise<void> {
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
 
             if (commits.length === 0) {
+                result.push("> [!NOTE]");
                 result.push(
-                    `> **Note:** Could not generate a detailed changelog — the commits have no common ancestor. ` +
-                        `The repository history may have been rewritten.`,
+                    "> Could not generate a detailed changelog — the commits have no common ancestor. " +
+                        "The repository history may have been rewritten.",
                 );
             }
 
-            for (const commit of commits) {
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+            // Track the running body size so we can truncate at commit boundaries
+            // instead of cutting mid-markdown when the GitHub comment limit is approached.
+            let bodySize = result.join("\n").length;
+            let omitted = 0;
+
+            for (let i = 0; i < commits.length; i++) {
+                const commit = commits[i];
 
                 // if the commit message contains a @mention, we add an unicode word joiner
                 // between @ and username, to avoid spamming the mentioned user.
@@ -118,16 +129,34 @@ export async function run(): Promise<void> {
 
                 const commitListItem = `- [${commitMessage}](${commitUrl})`;
 
+                core.info(`Checking for PRs associated with commit ${commit.sha}`);
                 const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+                let line: string;
                 if (pr) {
                     // use redirect.github.com instead of github.com to avoid spamming backlinks
                     const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-                    result.push(
-                        `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`,
-                    );
+                    line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
                 } else {
-                    result.push(commitListItem);
+                    line = commitListItem;
                 }
+
+                // Check if adding this commit would exceed the limit.
+                if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+                    omitted = commits.length - i;
+                    break;
+                }
+
+                result.push(line);
+                bodySize += line.length + 1;
+            }
+
+            if (omitted > 0) {
+                result.push("");
+                result.push("> [!NOTE]");
+                result.push(
+                    `> ${omitted} more commit(s) were omitted. ` +
+                        `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`,
+                );
             }
 
             result.push("");

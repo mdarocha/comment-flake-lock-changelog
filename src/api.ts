@@ -96,14 +96,15 @@ const LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request
 const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 
 // GitHub enforces a hard 65,536-character limit on issue/PR comment bodies.
-const GITHUB_COMMENT_MAX_LENGTH = 65536;
+export const GITHUB_COMMENT_MAX_LENGTH = 65536;
 const TRUNCATION_NOTICE =
     "\n\n> [!NOTE]\n> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.";
 
 /**
  * Attaches the identity tag to `body` and truncates the result to GitHub's
- * comment-size limit.  When truncation is needed the body is cut to fit and
- * `TRUNCATION_NOTICE` is inserted so readers know the output is incomplete.
+ * comment-size limit.  When truncation is needed the body is cut at the last
+ * complete line that fits, and `TRUNCATION_NOTICE` is appended so readers know
+ * the output is incomplete.
  */
 function buildCommentBody(body: string): string {
     const tag = `\n${COMMENT_TAG_PATTERN}`;
@@ -111,9 +112,12 @@ function buildCommentBody(body: string): string {
     if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
         return full;
     }
-    // Reserve space for the tag and the truncation notice, then slice the body.
+    // Reserve space for the tag and the truncation notice, then cut at the
+    // last newline within the available window to avoid breaking markdown.
     const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
-    return `${body.slice(0, available)}${TRUNCATION_NOTICE}${tag}`;
+    const cutIndex = body.lastIndexOf("\n", available);
+    const safeBody = cutIndex > 0 ? body.slice(0, cutIndex) : body.slice(0, available);
+    return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
 }
 
 export async function upsertComment(prNumber: number, body: string): Promise<void> {

@@ -21909,7 +21909,10 @@ ${COMMENT_TAG_PATTERN}`;
     return full;
   }
   const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
-  return `${body.slice(0, available)}${TRUNCATION_NOTICE}${tag}`;
+  const cutIndex = body.lastIndexOf(`
+`, available);
+  const safeBody = cutIndex > 0 ? body.slice(0, cutIndex) : body.slice(0, available);
+  return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
 }
 async function upsertComment(prNumber, body) {
   const client = getGithubClient();
@@ -21994,6 +21997,7 @@ async function run() {
   if (isNaN(prNumber) || prNumber === 0) {
     throw new Error(`Invalid pull request number: ${prNumber}`);
   }
+  const COMMIT_TRUNCATION_OVERHEAD = 350;
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -22017,20 +22021,37 @@ async function run() {
       result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       if (commits.length === 0) {
-        result.push(`> **Note:** Could not generate a detailed changelog — the commits have no common ancestor. ` + `The repository history may have been rewritten.`);
+        result.push("> [!NOTE]");
+        result.push("> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten.");
       }
-      for (const commit of commits) {
-        info(`Checking for PRs associated with commit ${commit.sha}`);
+      let bodySize = result.join(`
+`).length;
+      let omitted = 0;
+      for (let i = 0;i < commits.length; i++) {
+        const commit = commits[i];
         const commitMessage = commit.message.replace(/@/g, "@‍");
         const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
         const commitListItem = `- [${commitMessage}](${commitUrl})`;
+        info(`Checking for PRs associated with commit ${commit.sha}`);
         const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+        let line;
         if (pr) {
           const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-          result.push(`${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`);
+          line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
         } else {
-          result.push(commitListItem);
+          line = commitListItem;
         }
+        if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+          omitted = commits.length - i;
+          break;
+        }
+        result.push(line);
+        bodySize += line.length + 1;
+      }
+      if (omitted > 0) {
+        result.push("");
+        result.push("> [!NOTE]");
+        result.push(`> ${omitted} more commit(s) were omitted. ` + `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`);
       }
       result.push("");
       result.push("</details>");
