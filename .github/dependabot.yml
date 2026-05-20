@@ -31,3 +31,7 @@ updates:
       timezone: "Etc/UTC"
     labels:
       - "automated"
+    groups:
+      nix-dependencies:
+        patterns:
+          - "*"
