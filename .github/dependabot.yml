@@ -5,27 +5,24 @@ updates:
     schedule:
       interval: weekly
       day: friday
-      time: 21:00
+      time: "21:00"
       timezone: Etc/UTC
     labels:
       - automated
-    # eslint-plugin-github@6 (latest) locks @typescript-eslint to v8, which only
-    # supports eslint ^8||^9. Until eslint-plugin-github ships a version that
-    # uses @typescript-eslint v9+, eslint 10.x will break linting.
-    ignore:
-      - dependency-name: eslint
-        versions:
-          - 10.x
     cooldown:
       semver-patch-days: 3
       semver-minor-days: 7
       semver-major-days: 14
+    ignore:
+      - dependency-name: eslint
+        versions:
+          - 10.x
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: friday
-      time: 21:00
+      time: "21:00"
       timezone: Etc/UTC
     labels:
       - automated
@@ -34,7 +31,7 @@ updates:
     schedule:
       interval: weekly
       day: friday
-      time: 21:00
+      time: "21:00"
       timezone: Etc/UTC
     labels:
       - automated
