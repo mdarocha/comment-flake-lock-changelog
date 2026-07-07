@@ -66663,6 +66663,74 @@ async function saveCacheForRepo(owner, repo) {
   }
 }
 
+// src/buildFilter.ts
+import * as fs2 from "fs";
+import { spawnSync } from "node:child_process";
+import * as os4 from "os";
+import * as path from "path";
+function spawnCmd(cmd, opts) {
+  const result = spawnSync(cmd[0], cmd.slice(1), {
+    ...opts?.cwd !== undefined ? { cwd: opts.cwd } : {},
+    encoding: "utf8"
+  });
+  return {
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    exitCode: result.status ?? 1
+  };
+}
+function checkToolAvailable(tool) {
+  const result = spawnCmd(["which", tool]);
+  return result.exitCode === 0;
+}
+function buildAtPath(repoPath, buildCommand, inputName) {
+  const fullCommand = `${buildCommand} --override-input ${inputName} path:${repoPath} --no-link --print-out-paths`;
+  const result = spawnCmd(["sh", "-c", fullCommand]);
+  if (result.exitCode !== 0) {
+    throw new Error(`Build failed: ${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+async function filterCommitsByBuildRelevance(commits, diff, buildCommand, inputName) {
+  if (!checkToolAvailable("git")) {
+    throw new Error("git not found in PATH — cannot run build-filter");
+  }
+  if (!checkToolAvailable("nix")) {
+    throw new Error("nix not found in PATH — cannot run build-filter");
+  }
+  const tmpDir = fs2.mkdtempSync(path.join(os4.tmpdir(), "cflc-"));
+  try {
+    const repoPath = path.join(tmpDir, "repo");
+    const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
+    const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
+    if (cloneResult.exitCode !== 0) {
+      throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
+    }
+    const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
+    const outputs = [];
+    for (const sha of allShas) {
+      const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
+      if (checkoutResult.exitCode !== 0) {
+        throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
+      }
+      const output = buildAtPath(repoPath, buildCommand, inputName);
+      outputs.push(output);
+    }
+    const relevant = [];
+    const irrelevant = [];
+    for (let i = 0;i < commits.length; i++) {
+      if (outputs[i + 1] !== outputs[i]) {
+        relevant.push(commits[i]);
+      } else {
+        irrelevant.push(commits[i]);
+      }
+    }
+    return { relevant, irrelevant };
+  } finally {
+    fs2.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 // src/main.ts
 function parseLockfile(content) {
   if (content === "") {
@@ -66688,12 +66756,27 @@ function getLockfileDiffs(before, after) {
     beforeRev: before[key].rev
   }));
 }
+async function renderCommitListItem(result, owner, repo, commit) {
+  info(`Checking for PRs associated with commit ${commit.sha}`);
+  const commitMessage = commit.message.replace(/@/g, "@‍");
+  const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+  const commitListItem = `- [${commitMessage}](${commitUrl})`;
+  const pr = await getPullRequestForCommit(owner, repo, commit.sha);
+  if (pr) {
+    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+    result.push(`${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`);
+  } else {
+    result.push(commitListItem);
+  }
+}
 async function run() {
   const prNumber = Number(getInput("pull-request-number"));
   if (isNaN(prNumber) || prNumber === 0) {
     throw new Error(`Invalid pull request number: ${prNumber}`);
   }
   const COMMIT_TRUNCATION_OVERHEAD = 350;
+  const buildFilter = getInput("build-filter");
+  const buildFilterInput = getInput("build-filter-input");
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -66737,26 +66820,57 @@ async function run() {
       let bodySize = result.join(`
 `).length;
       let omitted = 0;
-      for (let i = 0;i < commits.length; i++) {
-        const commit = commits[i];
-        const commitMessage = commit.message.replace(/@/g, "@‍");
-        const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-        const commitListItem = `- [${commitMessage}](${commitUrl})`;
-        info(`Checking for PRs associated with commit ${commit.sha}`);
-        const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
-        let line;
-        if (pr) {
-          const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-          line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
-        } else {
-          line = commitListItem;
+      if (buildFilter && buildFilterInput && commits.length > 0) {
+        info(`Running build-filter for ${diff.owner}/${diff.repo}`);
+        let relevant = commits;
+        let irrelevant = [];
+        try {
+          const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, buildFilterInput);
+          relevant = filtered.relevant;
+          irrelevant = filtered.irrelevant;
+        } catch (e) {
+          warning(`build-filter failed: ${e}. Showing all commits.`);
         }
-        if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
-          omitted = commits.length - i;
-          break;
+        if (relevant.length === 0) {
+          result.push("");
+          result.push("> [!NOTE]");
+          result.push("> All commits in this range produced identical build output.");
         }
-        result.push(line);
-        bodySize += line.length + 1;
+        for (const commit of relevant) {
+          await renderCommitListItem(result, diff.owner, diff.repo, commit);
+        }
+        if (irrelevant.length > 0) {
+          result.push("");
+          result.push(`<details><summary>${irrelevant.length} commit${irrelevant.length === 1 ? "" : "s"} that did not affect the build output</summary>`);
+          result.push("");
+          for (const commit of irrelevant) {
+            await renderCommitListItem(result, diff.owner, diff.repo, commit);
+          }
+          result.push("");
+          result.push("</details>");
+        }
+      } else {
+        for (let i = 0;i < commits.length; i++) {
+          const commit = commits[i];
+          const commitMessage = commit.message.replace(/@/g, "@‍");
+          const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+          const commitListItem = `- [${commitMessage}](${commitUrl})`;
+          info(`Checking for PRs associated with commit ${commit.sha}`);
+          const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+          let line;
+          if (pr) {
+            const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+            line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
+          } else {
+            line = commitListItem;
+          }
+          if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+            omitted = commits.length - i;
+            break;
+          }
+          result.push(line);
+          bodySize += line.length + 1;
+        }
       }
       if (omitted > 0) {
         result.push("");

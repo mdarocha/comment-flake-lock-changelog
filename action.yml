@@ -11,6 +11,14 @@ inputs:
     description: "GITHUB_TOKEN or a `repo` scoped Personal Access Token (PAT)"
     required: false
     default: ${{ github.token }}
+  build-filter:
+    description: "When set, run this shell command at each upstream commit to filter the changelog into relevant/irrelevant commits. Requires nix and git in PATH. E.g. 'nix build .#myPackage'."
+    required: false
+    default: ""
+  build-filter-input:
+    description: "The flake input name to override during build-filter (e.g. 'nixpkgs'). Required when build-filter is set."
+    required: false
+    default: ""
 runs:
   using: node20
   main: dist/index.mjs

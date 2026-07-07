@@ -11,6 +11,7 @@ import {
     saveCacheForRepo,
     upsertComment,
 } from "~/api";
+import { filterCommitsByBuildRelevance } from "~/buildFilter";
 
 interface LockfileItem {
     type: string;
@@ -63,6 +64,32 @@ function getLockfileDiffs(before: Lockfile, after: Lockfile): Array<LockfileItem
         }));
 }
 
+async function renderCommitListItem(
+    result: string[],
+    owner: string,
+    repo: string,
+    commit: { sha: string; message: string; url: string },
+): Promise<void> {
+    core.info(`Checking for PRs associated with commit ${commit.sha}`);
+
+    // if the commit message contains a @mention, we add an unicode word joiner
+    // between @ and username, to avoid spamming the mentioned user.
+    const commitMessage = commit.message.replace(/@/g, "@\u200D");
+    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+    const commitListItem = `- [${commitMessage}](${commitUrl})`;
+
+    const pr = await getPullRequestForCommit(owner, repo, commit.sha);
+    if (pr) {
+        // use redirect.github.com instead of github.com to avoid spamming backlinks
+        const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+        result.push(
+            `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`,
+        );
+    } else {
+        result.push(commitListItem);
+    }
+}
+
 export async function run(): Promise<void> {
     const prNumber = Number(core.getInput("pull-request-number"));
     if (isNaN(prNumber) || prNumber === 0) {
@@ -72,6 +99,9 @@ export async function run(): Promise<void> {
     // Space reserved for the identity tag appended by upsertComment and a truncation notice.
     // This covers: tag (~48 chars) + "> [!NOTE]\n> N more commit(s) ..." (~250 chars) + small buffer.
     const COMMIT_TRUNCATION_OVERHEAD = 350;
+
+    const buildFilter = core.getInput("build-filter");
+    const buildFilterInput = core.getInput("build-filter-input");
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -145,37 +175,69 @@ export async function run(): Promise<void> {
             let bodySize = result.join("\n").length;
             let omitted = 0;
 
-            for (let i = 0; i < commits.length; i++) {
-                const commit = commits[i];
+            if (buildFilter && buildFilterInput && commits.length > 0) {
+                core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
 
-                // if the commit message contains a @mention, we add an unicode word joiner
-                // between @ and username, to avoid spamming the mentioned user.
-                const commitMessage = commit.message.replace(/@/g, "@\u200D");
-                const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+                let relevant = commits;
+                let irrelevant: typeof commits = [];
 
-                const commitListItem = `- [${commitMessage}](${commitUrl})`;
-
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
-                const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
-                let line: string;
-                if (pr) {
-                    // use redirect.github.com instead of github.com to avoid spamming backlinks
-                    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-                    line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
-                } else {
-                    line = commitListItem;
+                try {
+                    const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, buildFilterInput);
+                    relevant = filtered.relevant;
+                    irrelevant = filtered.irrelevant;
+                } catch (e) {
+                    core.warning(`build-filter failed: ${e}. Showing all commits.`);
                 }
 
-                // Check if adding this commit would exceed the limit.
-                if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
-                    omitted = commits.length - i;
-                    break;
+                if (relevant.length === 0) {
+                    result.push("");
+                    result.push("> [!NOTE]");
+                    result.push("> All commits in this range produced identical build output.");
                 }
 
-                result.push(line);
-                bodySize += line.length + 1;
+                for (const commit of relevant) {
+                    await renderCommitListItem(result, diff.owner, diff.repo, commit);
+                }
+
+                if (irrelevant.length > 0) {
+                    result.push("");
+                    result.push(
+                        `<details><summary>${irrelevant.length} commit${irrelevant.length === 1 ? "" : "s"} that did not affect the build output</summary>`,
+                    );
+                    result.push("");
+                    for (const commit of irrelevant) {
+                        await renderCommitListItem(result, diff.owner, diff.repo, commit);
+                    }
+                    result.push("");
+                    result.push("</details>");
+                }
+            } else {
+                for (let i = 0; i < commits.length; i++) {
+                    const commit = commits[i];
+
+                    const commitMessage = commit.message.replace(/@/g, "@\u200D");
+                    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+                    const commitListItem = `- [${commitMessage}](${commitUrl})`;
+
+                    core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                    const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+                    let line: string;
+                    if (pr) {
+                        const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+                        line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
+                    } else {
+                        line = commitListItem;
+                    }
+
+                    if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+                        omitted = commits.length - i;
+                        break;
+                    }
+
+                    result.push(line);
+                    bodySize += line.length + 1;
+                }
             }
-
             if (omitted > 0) {
                 result.push("");
                 result.push("> [!NOTE]");
