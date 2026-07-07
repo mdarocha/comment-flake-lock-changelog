@@ -188,3 +188,23 @@ export async function getPullRequestForCommit(
         url: associatedPRs[0].html_url,
     };
 }
+
+export interface PullRequestDetails {
+    authorLogin: string;
+    body: string;
+}
+
+export async function getPullRequestDetails(prNumber: number): Promise<PullRequestDetails> {
+    const client = getGithubClient();
+    const { repo } = github.context;
+
+    const { data } = await client.rest.pulls.get({
+        ...repo,
+        pull_number: prNumber,
+    });
+
+    return {
+        authorLogin: data.user.login,
+        body: data.body ?? "",
+    };
+}

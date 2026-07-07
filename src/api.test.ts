@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Mock } from "bun:test";
-import { getFileContentAtCommit, getPullRequestChangedFiles, getPullRequestRefs, upsertComment } from "~/api";
+import {
+    getFileContentAtCommit,
+    getPullRequestChangedFiles,
+    getPullRequestDetails,
+    getPullRequestRefs,
+    upsertComment,
+} from "~/api";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
 import type { GetFileContentAtCommitResponse } from "~/queries/GetFileContentAtCommit.graphql";
 import GetPullRequestChangedFilesQuery from "~/queries/GetPullRequestChangedFiles.graphql" with { type: "text" };
@@ -119,6 +125,19 @@ beforeEach(async () => {
                 listComments: {},
                 createComment: createCommentMock,
                 updateComment: updateCommentMock,
+            },
+            pulls: {
+                get: mock(async ({ pull_number }: { owner: string; repo: string; pull_number: number }) => {
+                    if (pull_number === 13) {
+                        return {
+                            data: {
+                                user: { login: "dependabot[bot]" },
+                                body: "PR body text with https://github.com/owner/dep/compare/abc..def",
+                            },
+                        };
+                    }
+                    throw new Error("Invalid pull_number");
+                }),
             },
         },
     };
@@ -251,5 +270,17 @@ describe("upsertComment", () => {
         expect(posted.length).toBe(65536);
         expect(posted).not.toContain("[!NOTE]");
         expect(logMock).not.toHaveBeenCalled();
+    });
+});
+
+describe("getPullRequestDetails", () => {
+    test("returns authorLogin and body", async () => {
+        const details = await getPullRequestDetails(13);
+        expect(details.authorLogin).toEqual("dependabot[bot]");
+        expect(details.body).toEqual("PR body text with https://github.com/owner/dep/compare/abc..def");
+    });
+
+    test("throws on unknown PR number", async () => {
+        await expect(async () => getPullRequestDetails(99)).toThrow();
     });
 });

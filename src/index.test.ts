@@ -2,10 +2,14 @@ import { beforeEach, expect, mock, test } from "bun:test";
 import { mockModule } from "~/utils/mockModule";
 
 beforeEach(() => {
-    // have to do this manually, since jest.resetModules() is not implemented
-    // Resets the module cache, so each test re-evaluates the imported modules
+    // Bun does not implement jest.resetModules(), so we manually clear the cache
+    // for index.ts and main.ts — the only modules that run side-effects on import.
+    // We intentionally do NOT clear the full cache; wiping all entries breaks
+    // mock.module() live bindings (e.g. @actions/github) in other test files.
     for (const key of Object.keys(require.cache)) {
-        delete require.cache[key];
+        if (key.includes("/src/index") || key.includes("/src/main")) {
+            delete require.cache[key];
+        }
     }
 });
 
