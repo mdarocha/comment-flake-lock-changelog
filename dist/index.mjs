@@ -66536,11 +66536,32 @@ async function compareCommits(owner, repo, base, head) {
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 var GITHUB_COMMENT_MAX_LENGTH = 65536;
+var TRUNCATION_NOTICE = `
+
+> [!NOTE]
+> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
+function buildCommentBody(body2) {
+  const tag = `
+${COMMENT_TAG_PATTERN}`;
+  const full = `${body2}${tag}`;
+  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
+    return full;
+  }
+  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
+  const cutIndex = body2.lastIndexOf(`
+`, available);
+  const safeBody = cutIndex > 0 ? body2.slice(0, cutIndex) : body2.slice(0, available);
+  return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
+}
 async function upsertComment(prNumber, body2) {
   const client = getGithubClient();
   const { repo } = context4;
-  const taggedBody = `${body2}
-${COMMENT_TAG_PATTERN}`;
+  const wouldExceed = `${body2}
+${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
+  if (wouldExceed) {
+    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
+  }
+  const taggedBody = buildCommentBody(body2);
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
@@ -66611,7 +66632,7 @@ async function restoreCacheForRepo(owner, repo) {
     const raw = fs7.readFileSync(filePath, "utf8");
     const cacheFile = JSON.parse(raw);
     for (const [k, v] of Object.entries(cacheFile.compareCommits)) {
-      compareCommitsCache.set(k, v.commits);
+      compareCommitsCache.set(k, v);
     }
     for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
       prForCommitCache.set(k, v);
@@ -66625,7 +66646,7 @@ async function saveCacheForRepo(owner, repo) {
   try {
     const compareCommitsEntries = {};
     for (const [k, commits] of compareCommitsCache.entries()) {
-      compareCommitsEntries[k] = { commits, skippedCount: 0 };
+      compareCommitsEntries[k] = commits;
     }
     const prForCommitEntries = {};
     for (const [k, v] of prForCommitCache.entries()) {
@@ -66659,9 +66680,8 @@ function spawnCmd(cmd, opts) {
     exitCode: result.status ?? 1
   };
 }
-function checkToolAvailable(tool) {
-  const result = spawnCmd(["which", tool]);
-  return result.exitCode === 0;
+function isGitAvailable() {
+  return spawnCmd(["git", "--version"]).exitCode === 0;
 }
 function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   if (outLo === outHi) {
@@ -66680,7 +66700,7 @@ function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn);
 }
 function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
-  if (!checkToolAvailable("git")) {
+  if (!isGitAvailable()) {
     throw new Error("git not found in PATH — cannot run build-filter");
   }
   const tmpDir = fs8.mkdtempSync(path12.join(os8.tmpdir(), "cflc-"));
@@ -66759,25 +66779,68 @@ function getLockfileDiffs(before, after) {
     name: key
   }));
 }
-async function renderCommitListItem(result, owner, repo, commit) {
-  info(`Checking for PRs associated with commit ${commit.sha}`);
-  const commitMessage = commit.message.replace(/@/g, "@‍");
-  const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-  const commitListItem = `- [${commitMessage}](${commitUrl})`;
-  const pr = await getPullRequestForCommit(owner, repo, commit.sha);
-  if (pr) {
-    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-    result.push(`${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`);
-  } else {
-    result.push(commitListItem);
-  }
-}
 async function run() {
   const prNumber = Number(getInput("pull-request-number"));
   if (isNaN(prNumber) || prNumber === 0) {
     throw new Error(`Invalid pull request number: ${prNumber}`);
   }
-  const COMMIT_TRUNCATION_OVERHEAD = 350;
+  const TAG_OVERHEAD = `
+${COMMENT_TAG_PATTERN}`.length;
+  function diffHeaderBlock(diff) {
+    return [
+      `### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`,
+      "",
+      "<details><summary>Changelog</summary>",
+      "",
+      `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`
+    ].join(`
+`);
+  }
+  function noCommonAncestorBlock() {
+    return [
+      "",
+      "> [!NOTE]",
+      "> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten."
+    ].join(`
+`);
+  }
+  function allIrrelevantNoteBlock() {
+    return ["", "> [!NOTE]", "> All commits in this range produced identical build output."].join(`
+`);
+  }
+  function irrelevantAccordionOpenBlock(count) {
+    return [
+      "",
+      `<details><summary>${count} commit${count === 1 ? "" : "s"} that did not affect the build output</summary>`,
+      ""
+    ].join(`
+`);
+  }
+  function closingBlock() {
+    return ["", "</details>", ""].join(`
+`);
+  }
+  function buildOmittedNote(owner, repo, beforeRev, rev, count) {
+    return `
+
+> [!NOTE]
+` + `> ${count} more commit(s) were not shown (comment size limit). ` + `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})
+`;
+  }
+  function commitListItem(commit) {
+    const commitMessage = commit.message.replace(/@/g, "@‍");
+    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+    return `- [${commitMessage}](${commitUrl})`;
+  }
+  async function buildCommitLine(diff, commit) {
+    const item = commitListItem(commit);
+    const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+    if (!pr) {
+      return item;
+    }
+    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+    return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
+  }
   const buildFilter = getInput("build-filter");
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
@@ -66804,29 +66867,16 @@ async function run() {
       return;
     }
   }
+  const gathered = [];
   for (const { lockfile, diffs } of allDiffsByLockfile) {
-    result.push(`## ${lockfile}`);
     for (const diff of diffs) {
       info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
       await restoreCacheForRepo(diff.owner, diff.repo);
-      result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
-      result.push("");
-      result.push("<details><summary>Changelog</summary>");
-      result.push("");
-      result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
-      if (commits.length === 0) {
-        result.push("");
-        result.push("> [!NOTE]");
-        result.push("> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten.");
-      }
-      let bodySize = result.join(`
-`).length;
-      let omitted = 0;
+      let relevant = commits;
+      let irrelevant = [];
       if (buildFilter && commits.length > 0) {
         info(`Running build-filter for ${diff.owner}/${diff.repo}`);
-        let relevant = commits;
-        let irrelevant = [];
         try {
           const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
           relevant = filtered.relevant;
@@ -66834,56 +66884,91 @@ async function run() {
         } catch (e) {
           warning(`build-filter failed: ${e}. Showing all commits.`);
         }
-        if (relevant.length === 0) {
-          result.push("");
-          result.push("> [!NOTE]");
-          result.push("> All commits in this range produced identical build output.");
-        }
-        for (const commit of relevant) {
-          await renderCommitListItem(result, diff.owner, diff.repo, commit);
-        }
-        if (irrelevant.length > 0) {
-          result.push("");
-          result.push(`<details><summary>${irrelevant.length} commit${irrelevant.length === 1 ? "" : "s"} that did not affect the build output</summary>`);
-          result.push("");
-          for (const commit of irrelevant) {
-            await renderCommitListItem(result, diff.owner, diff.repo, commit);
-          }
-          result.push("");
-          result.push("</details>");
-        }
-      } else {
-        for (let i = 0;i < commits.length; i++) {
-          const commit = commits[i];
-          const commitMessage = commit.message.replace(/@/g, "@‍");
-          const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-          const commitListItem = `- [${commitMessage}](${commitUrl})`;
-          info(`Checking for PRs associated with commit ${commit.sha}`);
-          const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
-          let line;
-          if (pr) {
-            const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-            line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
-          } else {
-            line = commitListItem;
-          }
-          if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
-            omitted = commits.length - i;
-            break;
-          }
-          result.push(line);
-          bodySize += line.length + 1;
-        }
       }
-      if (omitted > 0) {
-        result.push("");
-        result.push("> [!NOTE]");
-        result.push(`> ${omitted} more commit(s) were omitted. ` + `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`);
-      }
-      result.push("");
-      result.push("</details>");
-      result.push("");
+      const firstLine = relevant.length > 0 ? await buildCommitLine(diff, relevant[0]) : null;
+      gathered.push({ lockfile, diff, relevant, irrelevant, firstLine });
+    }
+  }
+  let reserved = TAG_OVERHEAD;
+  const seenLockfiles = new Set;
+  for (const { lockfile, diff, relevant, irrelevant, firstLine } of gathered) {
+    if (!seenLockfiles.has(lockfile)) {
+      seenLockfiles.add(lockfile);
+      reserved += `## ${lockfile}`.length + 1;
+    }
+    reserved += diffHeaderBlock(diff).length + 1;
+    reserved += closingBlock().length + 1;
+    if (relevant.length === 0 && irrelevant.length === 0) {
+      reserved += noCommonAncestorBlock().length + 1;
+      continue;
+    }
+    if (relevant.length === 0) {
+      reserved += allIrrelevantNoteBlock().length + 1;
+    } else {
+      reserved += firstLine.length + 1;
+      reserved += buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, relevant.length).length + 1;
+    }
+    if (irrelevant.length > 0) {
+      reserved += irrelevantAccordionOpenBlock(irrelevant.length).length + 1;
+      reserved += closingBlock().length + 1;
+      reserved += buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, irrelevant.length).length + 1;
+    }
+  }
+  let discretionaryBudget = Math.max(0, GITHUB_COMMENT_MAX_LENGTH - result.join(`
+`).length - reserved);
+  let lastLockfile = null;
+  for (const { lockfile, diff, relevant, irrelevant, firstLine } of gathered) {
+    if (lockfile !== lastLockfile) {
+      result.push(`## ${lockfile}`);
+      lastLockfile = lockfile;
+    }
+    result.push(diffHeaderBlock(diff));
+    if (relevant.length === 0 && irrelevant.length === 0) {
+      result.push(closingBlock());
+      result.push(noCommonAncestorBlock());
       await saveCacheForRepo(diff.owner, diff.repo);
+      continue;
+    }
+    let omittedRelevant = 0;
+    if (relevant.length > 0) {
+      result.push(firstLine);
+      for (let i = 1;i < relevant.length; i++) {
+        const commit = relevant[i];
+        info(`Checking for PRs associated with commit ${commit.sha}`);
+        const line = await buildCommitLine(diff, commit);
+        if (line.length + 1 > discretionaryBudget) {
+          omittedRelevant = relevant.length - i;
+          break;
+        }
+        result.push(line);
+        discretionaryBudget -= line.length + 1;
+      }
+    }
+    if (irrelevant.length > 0) {
+      result.push(irrelevantAccordionOpenBlock(irrelevant.length));
+      let omittedIrrelevant = 0;
+      for (let i = 0;i < irrelevant.length; i++) {
+        const commit = irrelevant[i];
+        info(`Checking for PRs associated with commit ${commit.sha}`);
+        const line = await buildCommitLine(diff, commit);
+        if (line.length + 1 > discretionaryBudget) {
+          omittedIrrelevant = irrelevant.length - i;
+          break;
+        }
+        result.push(line);
+        discretionaryBudget -= line.length + 1;
+      }
+      result.push(closingBlock());
+      if (omittedIrrelevant > 0) {
+        result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedIrrelevant));
+      }
+    }
+    result.push(closingBlock());
+    await saveCacheForRepo(diff.owner, diff.repo);
+    if (relevant.length === 0) {
+      result.push(allIrrelevantNoteBlock());
+    } else if (omittedRelevant > 0) {
+      result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedRelevant));
     }
   }
   info("Posting comment to PR");

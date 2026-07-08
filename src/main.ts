@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import {
+    COMMENT_TAG_PATTERN,
     GITHUB_COMMENT_MAX_LENGTH,
     compareCommits,
     getFileContentAtCommit,
@@ -21,6 +22,7 @@ interface LockfileItem {
 }
 
 type Lockfile = Record<string, LockfileItem>;
+type Commit = { sha: string; message: string; url: string };
 
 function parseLockfile(content: string): Lockfile {
     if (content === "") {
@@ -68,41 +70,77 @@ function getLockfileDiffs(
         }));
 }
 
-async function renderCommitListItem(
-    result: string[],
-    owner: string,
-    repo: string,
-    commit: { sha: string; message: string; url: string },
-): Promise<void> {
-    core.info(`Checking for PRs associated with commit ${commit.sha}`);
-
-    // if the commit message contains a @mention, we add an unicode word joiner
-    // between @ and username, to avoid spamming the mentioned user.
-    const commitMessage = commit.message.replace(/@/g, "@\u200D");
-    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-    const commitListItem = `- [${commitMessage}](${commitUrl})`;
-
-    const pr = await getPullRequestForCommit(owner, repo, commit.sha);
-    if (pr) {
-        // use redirect.github.com instead of github.com to avoid spamming backlinks
-        const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-        result.push(
-            `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`,
-        );
-    } else {
-        result.push(commitListItem);
-    }
-}
-
 export async function run(): Promise<void> {
     const prNumber = Number(core.getInput("pull-request-number"));
     if (isNaN(prNumber) || prNumber === 0) {
         throw new Error(`Invalid pull request number: ${prNumber}`);
     }
 
-    // Space reserved for the identity tag appended by upsertComment and a truncation notice.
-    // This covers: tag (~48 chars) + "> [!NOTE]\n> N more commit(s) ..." (~250 chars) + small buffer.
-    const COMMIT_TRUNCATION_OVERHEAD = 350;
+    // Space reserved for the identity tag appended by upsertComment, so the commit-list
+    // truncation below leaves room for it instead of relying on api.ts's blunter fallback truncation.
+    const TAG_OVERHEAD = `\n${COMMENT_TAG_PATTERN}`.length;
+
+    function diffHeaderBlock(diff: { owner: string; repo: string; beforeRev: string; rev: string }): string {
+        return [
+            `### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`,
+            "",
+            "<details><summary>Changelog</summary>",
+            "",
+            `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
+        ].join("\n");
+    }
+
+    function noCommonAncestorBlock(): string {
+        return [
+            "",
+            "> [!NOTE]",
+            "> Could not generate a detailed changelog — the commits have no common ancestor. " +
+                "The repository history may have been rewritten.",
+        ].join("\n");
+    }
+
+    function allIrrelevantNoteBlock(): string {
+        return ["", "> [!NOTE]", "> All commits in this range produced identical build output."].join("\n");
+    }
+
+    function irrelevantAccordionOpenBlock(count: number): string {
+        return [
+            "",
+            `<details><summary>${count} commit${count === 1 ? "" : "s"} that did not affect the build output</summary>`,
+            "",
+        ].join("\n");
+    }
+
+    function closingBlock(): string {
+        return ["", "</details>", ""].join("\n");
+    }
+
+    function buildOmittedNote(owner: string, repo: string, beforeRev: string, rev: string, count: number): string {
+        return (
+            "\n\n> [!NOTE]\n" +
+            `> ${count} more commit(s) were not shown (comment size limit). ` +
+            `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})\n`
+        );
+    }
+
+    function commitListItem(commit: { message: string; url: string }): string {
+        // if the commit message contains a @mention, we add an unicode word joiner
+        // between @ and username, to avoid spamming the mentioned user.
+        const commitMessage = commit.message.replace(/@/g, "@\u200D");
+        const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+        return `- [${commitMessage}](${commitUrl})`;
+    }
+
+    async function buildCommitLine(diff: { owner: string; repo: string }, commit: Commit): Promise<string> {
+        const item = commitListItem(commit);
+        const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+        if (!pr) {
+            return item;
+        }
+        // use redirect.github.com instead of github.com to avoid spamming backlinks
+        const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+        return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
+    }
 
     const buildFilter = core.getInput("build-filter");
 
@@ -142,49 +180,30 @@ export async function run(): Promise<void> {
         }
     }
 
-    // Pass 2: full changelog generation
+    // Pass 2: gather every input's commit list up front, split into relevant/irrelevant
+    // when build-filter applies (irrelevant is always empty otherwise), plus the guaranteed
+    // first commit's line. This is what lets us know each input's exact fixed cost — header,
+    // accordion(s), notes — before any truncation decision is made below.
+    interface GatheredDiff {
+        lockfile: string;
+        diff: LockfileDiff;
+        relevant: Commit[];
+        irrelevant: Commit[];
+        firstLine: string | null;
+    }
+    const gathered: GatheredDiff[] = [];
 
-    // TODO cache changelogs if multiple lockfiles have the same refs and diffs
     for (const { lockfile, diffs } of allDiffsByLockfile) {
-        result.push(`## ${lockfile}`);
-
         for (const diff of diffs) {
             core.info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
-
             await restoreCacheForRepo(diff.owner, diff.repo);
-
-            result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
-
-            result.push("");
-            result.push("<details><summary>Changelog</summary>");
-            result.push("");
-
-            result.push(
-                `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
-            );
-
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
 
-            if (commits.length === 0) {
-                result.push("");
-                result.push("> [!NOTE]");
-                result.push(
-                    "> Could not generate a detailed changelog — the commits have no common ancestor. " +
-                        "The repository history may have been rewritten.",
-                );
-            }
-
-            // Track the running body size so we can truncate at commit boundaries
-            // instead of cutting mid-markdown when the GitHub comment limit is approached.
-            let bodySize = result.join("\n").length;
-            let omitted = 0;
+            let relevant = commits;
+            let irrelevant: Commit[] = [];
 
             if (buildFilter && commits.length > 0) {
                 core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
-
-                let relevant = commits;
-                let irrelevant: typeof commits = [];
-
                 try {
                     const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
                     relevant = filtered.relevant;
@@ -192,70 +211,124 @@ export async function run(): Promise<void> {
                 } catch (e) {
                     core.warning(`build-filter failed: ${e}. Showing all commits.`);
                 }
-
-                if (relevant.length === 0) {
-                    result.push("");
-                    result.push("> [!NOTE]");
-                    result.push("> All commits in this range produced identical build output.");
-                }
-
-                for (const commit of relevant) {
-                    await renderCommitListItem(result, diff.owner, diff.repo, commit);
-                }
-
-                if (irrelevant.length > 0) {
-                    result.push("");
-                    result.push(
-                        `<details><summary>${irrelevant.length} commit${irrelevant.length === 1 ? "" : "s"} that did not affect the build output</summary>`,
-                    );
-                    result.push("");
-                    for (const commit of irrelevant) {
-                        await renderCommitListItem(result, diff.owner, diff.repo, commit);
-                    }
-                    result.push("");
-                    result.push("</details>");
-                }
-            } else {
-                for (let i = 0; i < commits.length; i++) {
-                    const commit = commits[i];
-
-                    const commitMessage = commit.message.replace(/@/g, "@\u200D");
-                    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-                    const commitListItem = `- [${commitMessage}](${commitUrl})`;
-
-                    core.info(`Checking for PRs associated with commit ${commit.sha}`);
-                    const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
-                    let line: string;
-                    if (pr) {
-                        const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-                        line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
-                    } else {
-                        line = commitListItem;
-                    }
-
-                    if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
-                        omitted = commits.length - i;
-                        break;
-                    }
-
-                    result.push(line);
-                    bodySize += line.length + 1;
-                }
-            }
-            if (omitted > 0) {
-                result.push("");
-                result.push("> [!NOTE]");
-                result.push(
-                    `> ${omitted} more commit(s) were omitted. ` +
-                        `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`,
-                );
             }
 
-            result.push("");
-            result.push("</details>");
-            result.push("");
+            const firstLine = relevant.length > 0 ? await buildCommitLine(diff, relevant[0]) : null;
+            gathered.push({ lockfile, diff, relevant, irrelevant, firstLine });
+        }
+    }
 
+    // Pass 3: reserve space for everything that isn't a discretionary commit line —
+    // the identity tag, every input's header/accordion(s)/closing, its no-common-ancestor
+    // or all-irrelevant note if it has one, and — for inputs with relevant commits — the
+    // guaranteed first commit line plus the worst-case omitted-commits note(s). This
+    // guarantees no input can be truncated down to nothing without explanation, regardless
+    // of how many other inputs are in the same comment.
+    let reserved = TAG_OVERHEAD;
+    const seenLockfiles = new Set<string>();
+    for (const { lockfile, diff, relevant, irrelevant, firstLine } of gathered) {
+        if (!seenLockfiles.has(lockfile)) {
+            seenLockfiles.add(lockfile);
+            reserved += `## ${lockfile}`.length + 1;
+        }
+        reserved += diffHeaderBlock(diff).length + 1;
+        reserved += closingBlock().length + 1;
+
+        if (relevant.length === 0 && irrelevant.length === 0) {
+            reserved += noCommonAncestorBlock().length + 1;
+            continue;
+        }
+
+        if (relevant.length === 0) {
+            reserved += allIrrelevantNoteBlock().length + 1;
+        } else {
+            reserved += (firstLine as string).length + 1;
+            reserved += buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, relevant.length).length + 1;
+        }
+
+        if (irrelevant.length > 0) {
+            reserved += irrelevantAccordionOpenBlock(irrelevant.length).length + 1;
+            reserved += closingBlock().length + 1;
+            reserved += buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, irrelevant.length).length + 1;
+        }
+    }
+    let discretionaryBudget = Math.max(0, GITHUB_COMMENT_MAX_LENGTH - result.join("\n").length - reserved);
+
+    // Pass 4: render, spending the discretionary budget on extra commits per input in
+    // order — relevant commits first, then irrelevant ones. Each input's truncation point
+    // depends only on what's left after every input's fixed cost and guaranteed first
+    // commit have already been accounted for.
+    let lastLockfile: string | null = null;
+    for (const { lockfile, diff, relevant, irrelevant, firstLine } of gathered) {
+        if (lockfile !== lastLockfile) {
+            result.push(`## ${lockfile}`);
+            lastLockfile = lockfile;
+        }
+
+        result.push(diffHeaderBlock(diff));
+
+        if (relevant.length === 0 && irrelevant.length === 0) {
+            result.push(closingBlock());
+            result.push(noCommonAncestorBlock());
             await saveCacheForRepo(diff.owner, diff.repo);
+            continue;
+        }
+
+        let omittedRelevant = 0;
+        if (relevant.length > 0) {
+            result.push(firstLine as string);
+
+            for (let i = 1; i < relevant.length; i++) {
+                const commit = relevant[i];
+                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                const line = await buildCommitLine(diff, commit);
+
+                if (line.length + 1 > discretionaryBudget) {
+                    omittedRelevant = relevant.length - i;
+                    break;
+                }
+
+                result.push(line);
+                discretionaryBudget -= line.length + 1;
+            }
+        }
+
+        // The irrelevant accordion (and its own omitted-commits note, placed right
+        // after its closing tag) nests inside the outer accordion, same as the outer
+        // accordion's own note nests outside of it below.
+        if (irrelevant.length > 0) {
+            result.push(irrelevantAccordionOpenBlock(irrelevant.length));
+
+            let omittedIrrelevant = 0;
+            for (let i = 0; i < irrelevant.length; i++) {
+                const commit = irrelevant[i];
+                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                const line = await buildCommitLine(diff, commit);
+
+                if (line.length + 1 > discretionaryBudget) {
+                    omittedIrrelevant = irrelevant.length - i;
+                    break;
+                }
+
+                result.push(line);
+                discretionaryBudget -= line.length + 1;
+            }
+
+            result.push(closingBlock());
+
+            if (omittedIrrelevant > 0) {
+                result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedIrrelevant));
+            }
+        }
+
+        result.push(closingBlock());
+
+        await saveCacheForRepo(diff.owner, diff.repo);
+
+        if (relevant.length === 0) {
+            result.push(allIrrelevantNoteBlock());
+        } else if (omittedRelevant > 0) {
+            result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedRelevant));
         }
     }
 

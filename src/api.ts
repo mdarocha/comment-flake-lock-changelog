@@ -114,16 +114,42 @@ export async function compareCommits(
 }
 
 const LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
-const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+export const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 
 // GitHub enforces a hard 65,536-character limit on issue/PR comment bodies.
 export const GITHUB_COMMENT_MAX_LENGTH = 65536;
+const TRUNCATION_NOTICE =
+    "\n\n> [!NOTE]\n> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.";
+
+/**
+ * Attaches the identity tag to `body` and truncates the result to GitHub's
+ * comment-size limit.  When truncation is needed the body is cut at the last
+ * complete line that fits, and `TRUNCATION_NOTICE` is appended so readers know
+ * the output is incomplete.
+ */
+function buildCommentBody(body: string): string {
+    const tag = `\n${COMMENT_TAG_PATTERN}`;
+    const full = `${body}${tag}`;
+    if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
+        return full;
+    }
+    // Reserve space for the tag and the truncation notice, then cut at the
+    // last newline within the available window to avoid breaking markdown.
+    const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
+    const cutIndex = body.lastIndexOf("\n", available);
+    const safeBody = cutIndex > 0 ? body.slice(0, cutIndex) : body.slice(0, available);
+    return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
+}
 
 export async function upsertComment(prNumber: number, body: string): Promise<void> {
     const client = getGithubClient();
     const { repo } = github.context;
 
-    const taggedBody = `${body}\n${COMMENT_TAG_PATTERN}`;
+    const wouldExceed = `${body}\n${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
+    if (wouldExceed) {
+        core.warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
+    }
+    const taggedBody = buildCommentBody(body);
 
     function hasCommentTag(comment: { body?: string | null }): boolean {
         return (
@@ -203,10 +229,7 @@ export async function getPullRequestDetails(prNumber: number): Promise<PullReque
 }
 
 interface CacheFile {
-    compareCommits: Record<
-        string,
-        { commits: Array<{ sha: string; message: string; url: string }>; skippedCount: number }
-    >;
+    compareCommits: Record<string, Array<{ sha: string; message: string; url: string }>>;
     prForCommit: Record<string, { id: number; url: string } | null>;
 }
 
@@ -226,7 +249,7 @@ export async function restoreCacheForRepo(owner: string, repo: string): Promise<
         const raw = fs.readFileSync(filePath, "utf8");
         const cacheFile = JSON.parse(raw) as CacheFile;
         for (const [k, v] of Object.entries(cacheFile.compareCommits)) {
-            compareCommitsCache.set(k, v.commits);
+            compareCommitsCache.set(k, v);
         }
         for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
             prForCommitCache.set(k, v);
@@ -241,7 +264,7 @@ export async function saveCacheForRepo(owner: string, repo: string): Promise<voi
     try {
         const compareCommitsEntries: CacheFile["compareCommits"] = {};
         for (const [k, commits] of compareCommitsCache.entries()) {
-            compareCommitsEntries[k] = { commits, skippedCount: 0 };
+            compareCommitsEntries[k] = commits;
         }
         const prForCommitEntries: CacheFile["prForCommit"] = {};
         for (const [k, v] of prForCommitCache.entries()) {

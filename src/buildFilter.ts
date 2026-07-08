@@ -29,9 +29,8 @@ function spawnCmd(
     };
 }
 
-function checkToolAvailable(tool: string): boolean {
-    const result = spawnCmd(["which", tool]);
-    return result.exitCode === 0;
+function isGitAvailable(): boolean {
+    return spawnCmd(["git", "--version"]).exitCode === 0;
 }
 
 /**
@@ -85,7 +84,7 @@ export function filterCommitsByBuildRelevance(
     diff: Diff,
     buildCommand: string,
 ): { relevant: Commit[]; irrelevant: Commit[] } {
-    if (!checkToolAvailable("git")) {
+    if (!isGitAvailable()) {
         throw new Error("git not found in PATH \u2014 cannot run build-filter");
     }
 
