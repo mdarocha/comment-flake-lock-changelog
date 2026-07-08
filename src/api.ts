@@ -114,7 +114,7 @@ export async function compareCommits(
 }
 
 const LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
-const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
+export const COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 
 // GitHub enforces a hard 65,536-character limit on issue/PR comment bodies.
 export const GITHUB_COMMENT_MAX_LENGTH = 65536;
@@ -229,10 +229,7 @@ export async function getPullRequestDetails(prNumber: number): Promise<PullReque
 }
 
 interface CacheFile {
-    compareCommits: Record<
-        string,
-        { commits: Array<{ sha: string; message: string; url: string }>; skippedCount: number }
-    >;
+    compareCommits: Record<string, Array<{ sha: string; message: string; url: string }>>;
     prForCommit: Record<string, { id: number; url: string } | null>;
 }
 
@@ -252,7 +249,7 @@ export async function restoreCacheForRepo(owner: string, repo: string): Promise<
         const raw = fs.readFileSync(filePath, "utf8");
         const cacheFile = JSON.parse(raw) as CacheFile;
         for (const [k, v] of Object.entries(cacheFile.compareCommits)) {
-            compareCommitsCache.set(k, v.commits);
+            compareCommitsCache.set(k, v);
         }
         for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
             prForCommitCache.set(k, v);
@@ -267,7 +264,7 @@ export async function saveCacheForRepo(owner: string, repo: string): Promise<voi
     try {
         const compareCommitsEntries: CacheFile["compareCommits"] = {};
         for (const [k, commits] of compareCommitsCache.entries()) {
-            compareCommitsEntries[k] = { commits, skippedCount: 0 };
+            compareCommitsEntries[k] = commits;
         }
         const prForCommitEntries: CacheFile["prForCommit"] = {};
         for (const [k, v] of prForCommitCache.entries()) {
