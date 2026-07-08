@@ -166,8 +166,6 @@ export async function run(): Promise<void> {
     // Pass 2: gather every input's commit list (and, for the guaranteed first commit,
     // its PR association) up front. This is what lets us know each input's exact fixed
     // cost — header, accordion, notes — before any truncation decision is made below.
-
-    // TODO cache changelogs if multiple lockfiles have the same refs and diffs
     interface GatheredDiff {
         lockfile: string;
         diff: LockfileDiff;
