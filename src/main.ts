@@ -101,7 +101,6 @@ export async function run(): Promise<void> {
     const COMMIT_TRUNCATION_OVERHEAD = 350;
 
     const buildFilter = core.getInput("build-filter");
-    const buildFilterInput = core.getInput("build-filter-input");
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -163,6 +162,7 @@ export async function run(): Promise<void> {
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
 
             if (commits.length === 0) {
+                result.push("");
                 result.push("> [!NOTE]");
                 result.push(
                     "> Could not generate a detailed changelog — the commits have no common ancestor. " +
@@ -175,14 +175,14 @@ export async function run(): Promise<void> {
             let bodySize = result.join("\n").length;
             let omitted = 0;
 
-            if (buildFilter && buildFilterInput && commits.length > 0) {
+            if (buildFilter && commits.length > 0) {
                 core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
 
                 let relevant = commits;
                 let irrelevant: typeof commits = [];
 
                 try {
-                    const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, buildFilterInput);
+                    const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
                     relevant = filtered.relevant;
                     irrelevant = filtered.irrelevant;
                 } catch (e) {

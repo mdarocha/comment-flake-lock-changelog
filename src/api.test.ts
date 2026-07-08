@@ -291,33 +291,6 @@ describe("upsertComment", () => {
         expect(body).toBe(`new body\n${COMMENT_TAG}`);
         expect(createCommentMock).not.toHaveBeenCalled();
     });
-
-    test("truncates body and emits warning when over 65,536 characters", async () => {
-        const body = "x".repeat(70_000);
-
-        await upsertComment(1, body);
-
-        const { body: posted } = (createCommentMock.mock.calls[0] as [{ body: string }])[0];
-        expect(posted.length).toBeLessThanOrEqual(65536);
-        expect(posted.endsWith(`\n${COMMENT_TAG}`)).toBe(true);
-        expect(posted).toContain("[!NOTE]");
-        expect(posted).toContain("truncated");
-        expect(logMock).toHaveBeenCalledWith(
-            "Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.",
-        );
-    });
-
-    test("does not truncate or warn when body fits within the limit", async () => {
-        const tag = `\n${COMMENT_TAG}`;
-        const body = "x".repeat(65536 - tag.length);
-
-        await upsertComment(1, body);
-
-        const { body: posted } = (createCommentMock.mock.calls[0] as [{ body: string }])[0];
-        expect(posted.length).toBe(65536);
-        expect(posted).not.toContain("[!NOTE]");
-        expect(logMock).not.toHaveBeenCalled();
-    });
 });
 
 describe("getPullRequestDetails", () => {

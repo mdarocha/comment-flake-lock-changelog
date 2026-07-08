@@ -12,9 +12,13 @@ interface Diff {
     rev: string;
 }
 
-function spawnCmd(cmd: string[], opts?: { cwd?: string }): { stdout: string; stderr: string; exitCode: number } {
+function spawnCmd(
+    cmd: string[],
+    opts?: { cwd?: string; env?: NodeJS.ProcessEnv },
+): { stdout: string; stderr: string; exitCode: number } {
     const result = spawnSync(cmd[0], cmd.slice(1), {
         ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts?.env !== undefined ? { env: opts.env } : {}),
         encoding: "utf8",
     });
     return {
@@ -29,38 +33,56 @@ function checkToolAvailable(tool: string): boolean {
     return result.exitCode === 0;
 }
 
-function buildAtPath(repoPath: string, buildCommand: string, inputName: string): string {
-    const fullCommand = `${buildCommand} --override-input ${inputName} path:${repoPath} --no-link --print-out-paths`;
-    const result = spawnCmd(["sh", "-c", fullCommand]);
-    if (result.exitCode !== 0) {
-        throw new Error(`Build failed: ${result.stderr}`);
+/**
+ * Bisect the commit range to find all boundary points where the build output changes.
+ * O(k log N) builds where k = number of change points.
+ */
+function bisect(
+    lo: number,
+    hi: number,
+    outLo: string,
+    outHi: string,
+    allShas: string[],
+    outputs: Map<number, string>,
+    buildFn: (sha: string) => string,
+): void {
+    if (outLo === outHi) {
+        // Same output across range: all commits are irrelevant, fill without building
+        for (let i = lo + 1; i <= hi; i++) outputs.set(i, outLo);
+        return;
     }
-    return result.stdout.trim();
+    if (hi - lo === 1) {
+        // Adjacent commits with different outputs: boundary already known
+        outputs.set(hi, outHi);
+        return;
+    }
+    const mid = Math.floor((lo + hi) / 2);
+    const outMid = buildFn(allShas[mid]);
+    outputs.set(mid, outMid);
+    bisect(lo, mid, outLo, outMid, allShas, outputs, buildFn);
+    bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn);
 }
 
 /**
- * Filter commits by whether they affect the build output of the flake under test.
+ * Filter commits by whether they affect the build output.
  *
- * For each commit in the changelog, the upstream repo is checked out at that commit
- * and the build command is run with `--override-input <inputName> path:<checkout>`.
- * A commit is "relevant" if its build output differs from the previous commit's output.
+ * The upstream repo is cloned and checked out at various commits. For each build,
+ * the user-provided build command is run as-is in process.cwd() (the Actions workspace)
+ * with CFLC_INPUT_PATH set to the upstream checkout and CFLC_INPUT_REV set to the SHA.
+ * The command's stdout is used as the build fingerprint.
  *
- * Requires `git` and `nix` in PATH; throws a descriptive error if either is missing.
+ * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
+ * k = number of output change points, instead of O(N) for a linear scan.
  *
- * NOTE: This performs one nix build per commit. For large changelogs this can be slow,
- * but subsequent builds benefit from nix store deduplication/caching.
+ * Requires `git` in PATH; throws a descriptive error if missing.
  */
-export async function filterCommitsByBuildRelevance(
+export function filterCommitsByBuildRelevance(
     commits: Commit[],
     diff: Diff,
     buildCommand: string,
-    inputName: string,
-): Promise<{ relevant: Commit[]; irrelevant: Commit[] }> {
+): { relevant: Commit[]; irrelevant: Commit[] } {
     if (!checkToolAvailable("git")) {
-        throw new Error("git not found in PATH — cannot run build-filter");
-    }
-    if (!checkToolAvailable("nix")) {
-        throw new Error("nix not found in PATH — cannot run build-filter");
+        throw new Error("git not found in PATH \u2014 cannot run build-filter");
     }
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cflc-"));
@@ -74,30 +96,46 @@ export async function filterCommitsByBuildRelevance(
             throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
         }
 
-        // Build at beforeRev, then at each commit in order.
-        // outputs[0]   = beforeRev
-        // outputs[i+1] = commits[i]
+        // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha
         const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
-        const outputs: string[] = [];
 
-        for (const sha of allShas) {
+        const cmdParts = ["sh", "-c", buildCommand];
+
+        const buildFn = (sha: string): string => {
             const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
             if (checkoutResult.exitCode !== 0) {
                 throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
             }
-            const output = buildAtPath(repoPath, buildCommand, inputName);
-            outputs.push(output);
-        }
+            const result = spawnCmd(cmdParts, {
+                cwd: process.cwd(),
+                env: { ...process.env, CFLC_INPUT_PATH: repoPath, CFLC_INPUT_REV: sha },
+            });
+            if (result.exitCode !== 0) {
+                throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+            }
+            return result.stdout.trim();
+        };
 
+        // Build at endpoints
+        const outFirst = buildFn(allShas[0]);
+        const outLast = buildFn(allShas[allShas.length - 1]);
+
+        const outputs = new Map<number, string>();
+        outputs.set(0, outFirst);
+        outputs.set(allShas.length - 1, outLast);
+
+        // Bisect to find all change boundaries
+        bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
+
+        // Classify commits: commit[i] is relevant if outputs[i+1] !== outputs[i]
         const relevant: Commit[] = [];
         const irrelevant: Commit[] = [];
 
         for (let i = 0; i < commits.length; i++) {
-            // outputs has length commits.length + 1, so i and i+1 are always valid indices.
-            if (outputs[i + 1] !== outputs[i]) {
-                relevant.push(commits[i] as Commit);
+            if (outputs.get(i + 1) !== outputs.get(i)) {
+                relevant.push(commits[i]);
             } else {
-                irrelevant.push(commits[i] as Commit);
+                irrelevant.push(commits[i]);
             }
         }
 

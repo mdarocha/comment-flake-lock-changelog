@@ -66536,32 +66536,11 @@ async function compareCommits(owner, repo, base, head) {
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 var GITHUB_COMMENT_MAX_LENGTH = 65536;
-var TRUNCATION_NOTICE = `
-
-> [!NOTE]
-> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
-function buildCommentBody(body2) {
-  const tag = `
-${COMMENT_TAG_PATTERN}`;
-  const full = `${body2}${tag}`;
-  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
-    return full;
-  }
-  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
-  const cutIndex = body2.lastIndexOf(`
-`, available);
-  const safeBody = cutIndex > 0 ? body2.slice(0, cutIndex) : body2.slice(0, available);
-  return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
-}
 async function upsertComment(prNumber, body2) {
   const client = getGithubClient();
   const { repo } = context4;
-  const wouldExceed = `${body2}
-${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
-  if (wouldExceed) {
-    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
-  }
-  const taggedBody = buildCommentBody(body2);
+  const taggedBody = `${body2}
+${COMMENT_TAG_PATTERN}`;
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
@@ -66664,13 +66643,14 @@ async function saveCacheForRepo(owner, repo) {
 }
 
 // src/buildFilter.ts
-import * as fs2 from "fs";
+import * as fs8 from "fs";
 import { spawnSync } from "node:child_process";
-import * as os4 from "os";
-import * as path from "path";
+import * as os8 from "os";
+import * as path12 from "path";
 function spawnCmd(cmd, opts) {
   const result = spawnSync(cmd[0], cmd.slice(1), {
     ...opts?.cwd !== undefined ? { cwd: opts.cwd } : {},
+    ...opts?.env !== undefined ? { env: opts.env } : {},
     encoding: "utf8"
   });
   return {
@@ -66683,43 +66663,60 @@ function checkToolAvailable(tool) {
   const result = spawnCmd(["which", tool]);
   return result.exitCode === 0;
 }
-function buildAtPath(repoPath, buildCommand, inputName) {
-  const fullCommand = `${buildCommand} --override-input ${inputName} path:${repoPath} --no-link --print-out-paths`;
-  const result = spawnCmd(["sh", "-c", fullCommand]);
-  if (result.exitCode !== 0) {
-    throw new Error(`Build failed: ${result.stderr}`);
+function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
+  if (outLo === outHi) {
+    for (let i = lo + 1;i <= hi; i++)
+      outputs.set(i, outLo);
+    return;
   }
-  return result.stdout.trim();
+  if (hi - lo === 1) {
+    outputs.set(hi, outHi);
+    return;
+  }
+  const mid = Math.floor((lo + hi) / 2);
+  const outMid = buildFn(allShas[mid]);
+  outputs.set(mid, outMid);
+  bisect(lo, mid, outLo, outMid, allShas, outputs, buildFn);
+  bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn);
 }
-async function filterCommitsByBuildRelevance(commits, diff, buildCommand, inputName) {
+function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
   if (!checkToolAvailable("git")) {
     throw new Error("git not found in PATH — cannot run build-filter");
   }
-  if (!checkToolAvailable("nix")) {
-    throw new Error("nix not found in PATH — cannot run build-filter");
-  }
-  const tmpDir = fs2.mkdtempSync(path.join(os4.tmpdir(), "cflc-"));
+  const tmpDir = fs8.mkdtempSync(path12.join(os8.tmpdir(), "cflc-"));
   try {
-    const repoPath = path.join(tmpDir, "repo");
+    const repoPath = path12.join(tmpDir, "repo");
     const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
     const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
     if (cloneResult.exitCode !== 0) {
       throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
     }
     const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
-    const outputs = [];
-    for (const sha of allShas) {
+    const cmdParts = ["sh", "-c", buildCommand];
+    const buildFn = (sha) => {
       const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
       if (checkoutResult.exitCode !== 0) {
         throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
       }
-      const output = buildAtPath(repoPath, buildCommand, inputName);
-      outputs.push(output);
-    }
+      const result = spawnCmd(cmdParts, {
+        cwd: process.cwd(),
+        env: { ...process.env, CFLC_INPUT_PATH: repoPath, CFLC_INPUT_REV: sha }
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+      }
+      return result.stdout.trim();
+    };
+    const outFirst = buildFn(allShas[0]);
+    const outLast = buildFn(allShas[allShas.length - 1]);
+    const outputs = new Map;
+    outputs.set(0, outFirst);
+    outputs.set(allShas.length - 1, outLast);
+    bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
     const relevant = [];
     const irrelevant = [];
     for (let i = 0;i < commits.length; i++) {
-      if (outputs[i + 1] !== outputs[i]) {
+      if (outputs.get(i + 1) !== outputs.get(i)) {
         relevant.push(commits[i]);
       } else {
         irrelevant.push(commits[i]);
@@ -66727,7 +66724,7 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, inputN
     }
     return { relevant, irrelevant };
   } finally {
-    fs2.rmSync(tmpDir, { recursive: true, force: true });
+    fs8.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
@@ -66776,7 +66773,6 @@ async function run() {
   }
   const COMMIT_TRUNCATION_OVERHEAD = 350;
   const buildFilter = getInput("build-filter");
-  const buildFilterInput = getInput("build-filter-input");
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -66814,18 +66810,19 @@ async function run() {
       result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       if (commits.length === 0) {
+        result.push("");
         result.push("> [!NOTE]");
         result.push("> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten.");
       }
       let bodySize = result.join(`
 `).length;
       let omitted = 0;
-      if (buildFilter && buildFilterInput && commits.length > 0) {
+      if (buildFilter && commits.length > 0) {
         info(`Running build-filter for ${diff.owner}/${diff.repo}`);
         let relevant = commits;
         let irrelevant = [];
         try {
-          const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, buildFilterInput);
+          const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
           relevant = filtered.relevant;
           irrelevant = filtered.irrelevant;
         } catch (e) {

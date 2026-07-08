@@ -12,11 +12,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   build-filter:
-    description: "When set, run this shell command at each upstream commit to filter the changelog into relevant/irrelevant commits. Requires nix and git in PATH. E.g. 'nix build .#myPackage'."
-    required: false
-    default: ""
-  build-filter-input:
-    description: "The flake input name to override during build-filter (e.g. 'nixpkgs'). Required when build-filter is set."
+    description: "When set, run this shell command at each upstream commit to determine build relevance. The command receives CFLC_INPUT_PATH (path to the upstream checkout) and CFLC_INPUT_REV (commit SHA) as environment variables. Its stdout is used as a build fingerprint — commits that change the output are marked relevant. Requires git in PATH."
     required: false
     default: ""
 runs:
