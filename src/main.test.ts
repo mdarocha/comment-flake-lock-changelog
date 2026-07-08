@@ -44,6 +44,8 @@ beforeEach(async () => {
             compareCommits: mock(async () => []),
             getPullRequestForCommit: mock(async () => null),
             upsertComment: upsertCommentMock,
+            restoreCacheForRepo: mock(async () => {}),
+            saveCacheForRepo: mock(async () => {}),
         })),
     ];
 });

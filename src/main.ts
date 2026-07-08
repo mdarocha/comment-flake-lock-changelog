@@ -7,6 +7,8 @@ import {
     getPullRequestDetails,
     getPullRequestForCommit,
     getPullRequestRefs,
+    restoreCacheForRepo,
+    saveCacheForRepo,
     upsertComment,
 } from "~/api";
 
@@ -116,6 +118,8 @@ export async function run(): Promise<void> {
         for (const diff of diffs) {
             core.info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
 
+            await restoreCacheForRepo(diff.owner, diff.repo);
+
             result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
 
             result.push("");
@@ -184,6 +188,8 @@ export async function run(): Promise<void> {
             result.push("");
             result.push("</details>");
             result.push("");
+
+            await saveCacheForRepo(diff.owner, diff.repo);
         }
     }
 

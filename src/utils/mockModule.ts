@@ -7,7 +7,16 @@ import { mock } from "bun:test";
  * @param renderMocks - function to generate mocks (by their named or default exports)
  * @returns an object
  */
-export const mockModule = async (modulePath: string, renderMocks: () => Record<string, unknown>) => {
+export interface MockHandle {
+    [Symbol.dispose]: () => void;
+    dispose: () => void;
+}
+
+export const mockModule = async (
+    modulePath: string,
+    renderMocks: () => Record<string, unknown>,
+): Promise<MockHandle> => {
+    // dynamic import is intentional: this utility exercises module-loading boundaries for test mocking
     const original = {
         ...(await import(modulePath)),
     };
