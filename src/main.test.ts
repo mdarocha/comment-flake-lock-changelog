@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Mock } from "bun:test";
+import { COMMENT_TAG_PATTERN, GITHUB_COMMENT_MAX_LENGTH } from "~/api";
 import type { PullRequestDetails } from "~/api";
 import { mockModule } from "~/utils/mockModule";
 
@@ -95,7 +96,7 @@ describe("run", () => {
         const closingIndex = body.indexOf("</details>");
         expect(noteIndex).toBeGreaterThan(-1);
         expect(closingIndex).toBeGreaterThan(-1);
-        expect(noteIndex).toBeLessThan(closingIndex);
+        expect(noteIndex).toBeGreaterThan(closingIndex);
     });
 
     test("places the omitted-commits note outside the accordion and reserves room for the identity tag", async () => {
@@ -120,8 +121,10 @@ describe("run", () => {
         expect(noteIndex).toBeGreaterThan(-1);
         expect(closingIndex).toBeGreaterThan(-1);
         expect(noteIndex).toBeGreaterThan(closingIndex);
-        // Room must be left for the identity tag appended by upsertComment.
-        expect(body.length).toBeLessThan(65536);
+        // upsertComment is mocked here, so it never actually appends the identity tag —
+        // add its real length back in to confirm the *tagged* body would still fit.
+        const taggedLength = body.length + `\n${COMMENT_TAG_PATTERN}`.length;
+        expect(taggedLength).toBeLessThanOrEqual(GITHUB_COMMENT_MAX_LENGTH);
     });
 
     test("guarantees every input's header and first commit even when other inputs also need truncation", async () => {

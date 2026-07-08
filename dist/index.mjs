@@ -66799,8 +66799,8 @@ ${COMMENT_TAG_PATTERN}`.length;
     }
     result.push(diffHeaderBlock(diff));
     if (commits.length === 0) {
-      result.push(noCommonAncestorBlock());
       result.push(closingBlock());
+      result.push(noCommonAncestorBlock());
       await saveCacheForRepo(diff.owner, diff.repo);
       continue;
     }
