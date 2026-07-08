@@ -1,6 +1,10 @@
+import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import type { GetResponseDataTypeFromEndpointMethod } from "@octokit/types";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
 import type { GetFileContentAtCommitResponse } from "~/queries/GetFileContentAtCommit.graphql";
 import GetPullRequestChangedFilesQuery from "~/queries/GetPullRequestChangedFiles.graphql" with { type: "text" };
@@ -45,11 +49,11 @@ export async function getPullRequestRefs(prNumber: number): Promise<{ base: stri
     };
 }
 
-export async function getFileContentAtCommit(commit: string, path: string): Promise<string> {
+export async function getFileContentAtCommit(commit: string, filePath: string): Promise<string> {
     const client = getGithubClient();
     const { repo } = github.context;
 
-    const normalizedPath = path.startsWith("/") ? path.slice(1) : path;
+    const normalizedPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
 
     const result = await client.graphql<GetFileContentAtCommitResponse>(GetFileContentAtCommitQuery, {
         ...repo,
@@ -59,13 +63,26 @@ export async function getFileContentAtCommit(commit: string, path: string): Prom
     return result.repository.object.text;
 }
 
-// TODO tests
+const compareCommitsCache = new Map<string, Array<{ sha: string; message: string; url: string }>>();
+const prForCommitCache = new Map<string, { id: number; url: string } | null>();
+
+export function clearCaches(): void {
+    compareCommitsCache.clear();
+    prForCommitCache.clear();
+}
+
 export async function compareCommits(
     owner: string,
     repo: string,
     base: string,
     head: string,
 ): Promise<Array<{ sha: string; message: string; url: string }>> {
+    const cacheKey = `${owner}/${repo}@${base}...${head}`;
+    const cached = compareCommitsCache.get(cacheKey);
+    if (cached !== undefined) {
+        return cached;
+    }
+
     const client = getGithubClient();
 
     try {
@@ -75,18 +92,22 @@ export async function compareCommits(
             basehead: `${base}...${head}`,
         });
 
-        return compareData.commits.map((commit) => ({
+        const result = compareData.commits.map((commit) => ({
             sha: commit.sha,
             message: commit.commit.message.split("\n")[0],
             url: commit.html_url,
         }));
+        compareCommitsCache.set(cacheKey, result);
+        return result;
     } catch (error) {
         if (error instanceof Error && error.message.includes("No common ancestor")) {
             core.warning(
                 `No common ancestor between ${base} and ${head} in ${owner}/${repo}. ` +
                     "The repository history may have been rewritten. Skipping commit changelog for this input.",
             );
-            return [];
+            const empty: Array<{ sha: string; message: string; url: string }> = [];
+            compareCommitsCache.set(cacheKey, empty);
+            return empty;
         }
         throw error;
     }
@@ -165,13 +186,16 @@ export async function upsertComment(prNumber: number, body: string): Promise<voi
     }
 }
 
-// TODO tests
-// TODO optimize this to make less api calls
 export async function getPullRequestForCommit(
     owner: string,
     repo: string,
     commit: string,
 ): Promise<{ id: number; url: string } | null> {
+    const cacheKey = `${owner}/${repo}@${commit}`;
+    if (prForCommitCache.has(cacheKey)) {
+        return prForCommitCache.get(cacheKey)!;
+    }
+
     const client = getGithubClient();
     const { data: associatedPRs } = await client.rest.repos.listPullRequestsAssociatedWithCommit({
         owner,
@@ -179,14 +203,9 @@ export async function getPullRequestForCommit(
         commit_sha: commit,
     });
 
-    if (associatedPRs.length === 0) {
-        return null;
-    }
-
-    return {
-        id: associatedPRs[0].id,
-        url: associatedPRs[0].html_url,
-    };
+    const result = associatedPRs.length === 0 ? null : { id: associatedPRs[0].id, url: associatedPRs[0].html_url };
+    prForCommitCache.set(cacheKey, result);
+    return result;
 }
 
 export interface PullRequestDetails {
@@ -207,4 +226,60 @@ export async function getPullRequestDetails(prNumber: number): Promise<PullReque
         authorLogin: data.user.login,
         body: data.body ?? "",
     };
+}
+
+interface CacheFile {
+    compareCommits: Record<
+        string,
+        { commits: Array<{ sha: string; message: string; url: string }>; skippedCount: number }
+    >;
+    prForCommit: Record<string, { id: number; url: string } | null>;
+}
+
+function getCacheKeyAndPath(owner: string, repo: string): { key: string; filePath: string } {
+    const key = `comment-flake-lock-changelog-v1-${owner}-${repo}`;
+    const filePath = path.join(os.tmpdir(), `${key}.json`);
+    return { key, filePath };
+}
+
+export async function restoreCacheForRepo(owner: string, repo: string): Promise<void> {
+    const { key, filePath } = getCacheKeyAndPath(owner, repo);
+    try {
+        const hit = await cache.restoreCache([filePath], key);
+        if (!hit) {
+            return;
+        }
+        const raw = fs.readFileSync(filePath, "utf8");
+        const cacheFile = JSON.parse(raw) as CacheFile;
+        for (const [k, v] of Object.entries(cacheFile.compareCommits)) {
+            compareCommitsCache.set(k, v.commits);
+        }
+        for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
+            prForCommitCache.set(k, v);
+        }
+    } catch (err) {
+        core.debug(`Cache restore unavailable or failed: ${String(err)}`);
+    }
+}
+
+export async function saveCacheForRepo(owner: string, repo: string): Promise<void> {
+    const { key, filePath } = getCacheKeyAndPath(owner, repo);
+    try {
+        const compareCommitsEntries: CacheFile["compareCommits"] = {};
+        for (const [k, commits] of compareCommitsCache.entries()) {
+            compareCommitsEntries[k] = { commits, skippedCount: 0 };
+        }
+        const prForCommitEntries: CacheFile["prForCommit"] = {};
+        for (const [k, v] of prForCommitCache.entries()) {
+            prForCommitEntries[k] = v;
+        }
+        const cacheFile: CacheFile = {
+            compareCommits: compareCommitsEntries,
+            prForCommit: prForCommitEntries,
+        };
+        fs.writeFileSync(filePath, JSON.stringify(cacheFile), "utf8");
+        await cache.saveCache([filePath], key);
+    } catch (err) {
+        core.debug(`Cache save unavailable or failed: ${String(err)}`);
+    }
 }

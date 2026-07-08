@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Mock } from "bun:test";
 import {
+    clearCaches,
+    compareCommits,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
     getPullRequestDetails,
+    getPullRequestForCommit,
     getPullRequestRefs,
     upsertComment,
 } from "~/api";
@@ -22,6 +25,10 @@ let logMock: Mock<(log: string) => void>;
 let createCommentMock: Mock<(params: unknown) => Promise<void>>;
 let updateCommentMock: Mock<(params: unknown) => Promise<void>>;
 let existingCommentsList: Array<{ id: number; body: string }>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let compareCommitsMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let listPRsMock: Mock<any>;
 
 beforeEach(async () => {
     const testToken = `test_token_${Math.random()}`;
@@ -139,6 +146,45 @@ beforeEach(async () => {
                     throw new Error("Invalid pull_number");
                 }),
             },
+            repos: {
+                compareCommitsWithBasehead: (compareCommitsMock = mock(
+                    async ({ owner, repo, basehead }: { owner: string; repo: string; basehead: string }) => {
+                        if (owner === "test_owner" && repo === "test_repo" && basehead === "abc123...def456") {
+                            return {
+                                data: {
+                                    commits: [
+                                        {
+                                            sha: "aaa111",
+                                            commit: { message: "feat: add feature\n\nBody" },
+                                            html_url: "https://github.com/test_owner/test_repo/commit/aaa111",
+                                        },
+                                        {
+                                            sha: "bbb222",
+                                            commit: { message: "fix: resolve bug" },
+                                            html_url: "https://github.com/test_owner/test_repo/commit/bbb222",
+                                        },
+                                    ],
+                                },
+                            };
+                        }
+                        if (owner === "test_owner" && repo === "test_repo" && basehead === "no_base...no_head") {
+                            throw new Error("No common ancestor");
+                        }
+                        throw new Error("Invalid arguments");
+                    },
+                )),
+                listPullRequestsAssociatedWithCommit: (listPRsMock = mock(
+                    async ({ owner, repo, commit_sha }: { owner: string; repo: string; commit_sha: string }) => {
+                        if (owner === "test_owner" && repo === "test_repo" && commit_sha === "aaa111") {
+                            return { data: [{ id: 42, html_url: "https://github.com/test_owner/test_repo/pull/42" }] };
+                        }
+                        if (owner === "test_owner" && repo === "test_repo" && commit_sha === "no_pr_commit") {
+                            return { data: [] };
+                        }
+                        throw new Error("Invalid arguments");
+                    },
+                )),
+            },
         },
     };
 
@@ -166,6 +212,7 @@ afterEach(() => {
     for (const moduleMock of moduleMocks) {
         moduleMock.dispose();
     }
+    clearCaches();
 });
 
 describe("getPullRequestChangedFiles", () => {
@@ -282,5 +329,59 @@ describe("getPullRequestDetails", () => {
 
     test("throws on unknown PR number", async () => {
         await expect(async () => getPullRequestDetails(99)).toThrow();
+    });
+});
+
+describe("compareCommits", () => {
+    test("returns correct commits", async () => {
+        const commits = await compareCommits("test_owner", "test_repo", "abc123", "def456");
+        expect(commits).toEqual([
+            {
+                sha: "aaa111",
+                message: "feat: add feature",
+                url: "https://github.com/test_owner/test_repo/commit/aaa111",
+            },
+            {
+                sha: "bbb222",
+                message: "fix: resolve bug",
+                url: "https://github.com/test_owner/test_repo/commit/bbb222",
+            },
+        ]);
+    });
+
+    test("calls API only once on cache hit", async () => {
+        await compareCommits("test_owner", "test_repo", "abc123", "def456");
+        await compareCommits("test_owner", "test_repo", "abc123", "def456");
+        expect(compareCommitsMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("returns empty array on no-common-ancestor", async () => {
+        const commits = await compareCommits("test_owner", "test_repo", "no_base", "no_head");
+        expect(commits).toEqual([]);
+        expect(logMock).toHaveBeenCalled();
+    });
+});
+
+describe("getPullRequestForCommit", () => {
+    test("returns PR info for known commit", async () => {
+        const pr = await getPullRequestForCommit("test_owner", "test_repo", "aaa111");
+        expect(pr).toEqual({ id: 42, url: "https://github.com/test_owner/test_repo/pull/42" });
+    });
+
+    test("returns null when no PRs", async () => {
+        const pr = await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
+        expect(pr).toBeNull();
+    });
+
+    test("calls API only once on cache hit", async () => {
+        await getPullRequestForCommit("test_owner", "test_repo", "aaa111");
+        await getPullRequestForCommit("test_owner", "test_repo", "aaa111");
+        expect(listPRsMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("caches null result", async () => {
+        await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
+        await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
+        expect(listPRsMock).toHaveBeenCalledTimes(1);
     });
 });
