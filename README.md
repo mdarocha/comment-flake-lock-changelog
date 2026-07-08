@@ -108,6 +108,14 @@ that input, unfiltered, rather than guessing.
 > packages. Reach for an actual `nix build` only if you need to inspect the built result itself (for
 > example, to fingerprint a specific file inside the output) rather than just detect that something
 > changed.
+>
+> Keep unrelated changes out of the sentinel, or every commit will look "relevant" even when nothing
+> you use actually changed. Point it at the specific output you care about (e.g.
+> `packages.<system>.default`) instead of something broad like all of nixpkgs — that way doc and
+> manual updates elsewhere in the tree never enter your dependency closure in the first place. And
+> avoid anything that deliberately stamps the exact commit into the output, like a NixOS config's
+> `system.nixos.revision` set from `self.rev` — that changes on every single commit by design, which
+> defeats the filter entirely.
 
 ### Inputs that change together
 
