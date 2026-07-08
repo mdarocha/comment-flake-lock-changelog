@@ -41,7 +41,7 @@ beforeEach(async () => {
                 commit === "basesha" ? BEFORE_LOCK : AFTER_LOCK,
             ),
             getPullRequestDetails: getPullRequestDetailsMock,
-            compareCommits: mock(async () => []),
+            compareCommits: mock(async () => ({ commits: [], skippedCount: 0 })),
             getPullRequestForCommit: mock(async () => null),
             upsertComment: upsertCommentMock,
             restoreCacheForRepo: mock(async () => {}),

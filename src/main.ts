@@ -133,6 +133,7 @@ export async function run(): Promise<void> {
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
 
             if (commits.length === 0) {
+                result.push("");
                 result.push("> [!NOTE]");
                 result.push(
                     "> Could not generate a detailed changelog — the commits have no common ancestor. " +
@@ -176,20 +177,20 @@ export async function run(): Promise<void> {
                 bodySize += line.length + 1;
             }
 
-            if (omitted > 0) {
-                result.push("");
-                result.push("> [!NOTE]");
-                result.push(
-                    `> ${omitted} more commit(s) were omitted. ` +
-                        `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`,
-                );
-            }
-
             result.push("");
             result.push("</details>");
             result.push("");
 
             await saveCacheForRepo(diff.owner, diff.repo);
+
+            if (omitted > 0) {
+                result.push("");
+                result.push("> [!NOTE]");
+                result.push(
+                    `> ${omitted} more commit(s) were not shown (comment size limit). [View full comparison](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
+                );
+                result.push("");
+            }
         }
     }
 

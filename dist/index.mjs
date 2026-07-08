@@ -66536,32 +66536,11 @@ async function compareCommits(owner, repo, base, head) {
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 var GITHUB_COMMENT_MAX_LENGTH = 65536;
-var TRUNCATION_NOTICE = `
-
-> [!NOTE]
-> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
-function buildCommentBody(body2) {
-  const tag = `
-${COMMENT_TAG_PATTERN}`;
-  const full = `${body2}${tag}`;
-  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
-    return full;
-  }
-  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
-  const cutIndex = body2.lastIndexOf(`
-`, available);
-  const safeBody = cutIndex > 0 ? body2.slice(0, cutIndex) : body2.slice(0, available);
-  return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
-}
 async function upsertComment(prNumber, body2) {
   const client = getGithubClient();
   const { repo } = context4;
-  const wouldExceed = `${body2}
-${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
-  if (wouldExceed) {
-    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
-  }
-  const taggedBody = buildCommentBody(body2);
+  const taggedBody = `${body2}
+${COMMENT_TAG_PATTERN}`;
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
@@ -66731,6 +66710,7 @@ async function run() {
       result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       if (commits.length === 0) {
+        result.push("");
         result.push("> [!NOTE]");
         result.push("> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten.");
       }
@@ -66758,15 +66738,16 @@ async function run() {
         result.push(line);
         bodySize += line.length + 1;
       }
-      if (omitted > 0) {
-        result.push("");
-        result.push("> [!NOTE]");
-        result.push(`> ${omitted} more commit(s) were omitted. ` + `[View the full comparison on GitHub](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev}).`);
-      }
       result.push("");
       result.push("</details>");
       result.push("");
       await saveCacheForRepo(diff.owner, diff.repo);
+      if (omitted > 0) {
+        result.push("");
+        result.push("> [!NOTE]");
+        result.push(`> ${omitted} more commit(s) were not shown (comment size limit). [View full comparison](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
+        result.push("");
+      }
     }
   }
   info("Posting comment to PR");
