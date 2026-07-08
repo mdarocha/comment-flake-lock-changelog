@@ -66700,7 +66700,12 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
       }
       const result = spawnCmd(cmdParts, {
         cwd: process.cwd(),
-        env: { ...process.env, CFLC_INPUT_PATH: repoPath, CFLC_INPUT_REV: sha }
+        env: {
+          ...process.env,
+          CFLC_INPUT_NAME: diff.name,
+          CFLC_INPUT_PATH: repoPath,
+          CFLC_INPUT_REV: sha
+        }
       });
       if (result.exitCode !== 0) {
         throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
@@ -66750,7 +66755,8 @@ function parseLockfile(content) {
 function getLockfileDiffs(before, after) {
   return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => ({
     ...value,
-    beforeRev: before[key].rev
+    beforeRev: before[key].rev,
+    name: key
   }));
 }
 async function renderCommitListItem(result, owner, repo, commit) {

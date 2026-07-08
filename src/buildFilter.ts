@@ -10,6 +10,7 @@ interface Diff {
     repo: string;
     beforeRev: string;
     rev: string;
+    name: string;
 }
 
 function spawnCmd(
@@ -68,8 +69,11 @@ function bisect(
  *
  * The upstream repo is cloned and checked out at various commits. For each build,
  * the user-provided build command is run as-is in process.cwd() (the Actions workspace)
- * with CFLC_INPUT_PATH set to the upstream checkout and CFLC_INPUT_REV set to the SHA.
- * The command's stdout is used as the build fingerprint.
+ * with CFLC_INPUT_NAME set to the flake input's name, CFLC_INPUT_PATH set to the
+ * upstream checkout, and CFLC_INPUT_REV set to the SHA. CFLC_INPUT_NAME lets a single
+ * build command handle whichever input is currently being bisected (e.g.
+ * `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`), instead of hardcoding
+ * one input name. The command's stdout is used as the build fingerprint.
  *
  * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
  * k = number of output change points, instead of O(N) for a linear scan.
@@ -108,7 +112,12 @@ export function filterCommitsByBuildRelevance(
             }
             const result = spawnCmd(cmdParts, {
                 cwd: process.cwd(),
-                env: { ...process.env, CFLC_INPUT_PATH: repoPath, CFLC_INPUT_REV: sha },
+                env: {
+                    ...process.env,
+                    CFLC_INPUT_NAME: diff.name,
+                    CFLC_INPUT_PATH: repoPath,
+                    CFLC_INPUT_REV: sha,
+                },
             });
             if (result.exitCode !== 0) {
                 throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
