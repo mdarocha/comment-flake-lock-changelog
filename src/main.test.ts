@@ -22,8 +22,12 @@ let moduleMocks: Array<Awaited<ReturnType<typeof mockModule>>> = [];
 let upsertCommentMock: Mock<(prNumber: number, body: string) => Promise<void>>;
 let getPullRequestDetailsMock: Mock<() => Promise<PullRequestDetails>>;
 let getFileContentAtCommitMock: Mock<(commit: string, path: string) => Promise<string>>;
+let warningMock: Mock<(message: string) => void>;
+let buildFilterInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let filterCommitsByBuildRelevanceMock: Mock<any>;
 
 beforeEach(async () => {
     upsertCommentMock = mock(async () => {});
@@ -35,12 +39,20 @@ beforeEach(async () => {
         commit === "basesha" ? BEFORE_LOCK : AFTER_LOCK,
     );
     compareCommitsMock = mock(async () => []);
+    warningMock = mock(() => {});
+    buildFilterInput = "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
-            getInput: mock((input: string) => (input === "pull-request-number" ? "42" : "")),
+            getInput: mock((input: string) => {
+                if (input === "pull-request-number") return "42";
+                if (input === "build-filter") return buildFilterInput;
+                return "";
+            }),
             info: mock(() => {}),
-            warning: mock(() => {}),
+            warning: warningMock,
         })),
         await mockModule("~/api", () => ({
             getPullRequestChangedFiles: mock(async () => ["flake.lock"]),
@@ -52,6 +64,9 @@ beforeEach(async () => {
             upsertComment: upsertCommentMock,
             restoreCacheForRepo: mock(async () => {}),
             saveCacheForRepo: mock(async () => {}),
+        })),
+        await mockModule("~/buildFilter", () => ({
+            filterCommitsByBuildRelevance: filterCommitsByBuildRelevanceMock,
         })),
     ];
 });
@@ -173,5 +188,70 @@ describe("run", () => {
         expect(body).toContain("commit 0 in flake-utils");
         expect((body.match(/more commit\(s\) were not shown/g) ?? []).length).toBeGreaterThanOrEqual(1);
         expect(body.length).toBeLessThan(65536);
+    });
+
+    test("splits commits into a relevant list and a collapsed irrelevant section when build-filter is set", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({
+            relevant: [commits[0]],
+            irrelevant: [commits[1]],
+        }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        const [passedCommits, passedDiff, passedCommand] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { owner: string; repo: string; name: string },
+            string,
+        ];
+        expect(passedCommits).toEqual(commits);
+        expect(passedDiff).toMatchObject({ owner: "NixOS", repo: "nixpkgs", name: "nixpkgs" });
+        expect(passedCommand).toBe(buildFilterInput);
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("relevant commit");
+        expect(body).toContain("1 commit that did not affect the build output");
+        // the irrelevant commit is only listed inside the collapsed section
+        const summaryIndex = body.indexOf("that did not affect the build output");
+        const irrelevantCommitIndex = body.indexOf("irrelevant commit");
+        expect(irrelevantCommitIndex).toBeGreaterThan(summaryIndex);
+    });
+
+    test("falls back to showing every commit unfiltered when build-filter throws", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "first commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "second commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => {
+            throw new Error("git not found in PATH — cannot run build-filter");
+        });
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(warningMock).toHaveBeenCalledTimes(1);
+        expect(warningMock.mock.calls[0][0]).toContain("build-filter failed");
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("first commit");
+        expect(body).toContain("second commit");
+        expect(body).not.toContain("that did not affect the build output");
     });
 });

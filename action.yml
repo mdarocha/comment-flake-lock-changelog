@@ -11,6 +11,10 @@ inputs:
     description: "GITHUB_TOKEN or a `repo` scoped Personal Access Token (PAT)"
     required: false
     default: ${{ github.token }}
+  build-filter:
+    description: "Shell command that builds your flake, used to hide changelog commits that don't affect the build output. See the README's 'Build filter' section for details."
+    required: false
+    default: ""
 runs:
   using: node20
   main: dist/index.mjs
