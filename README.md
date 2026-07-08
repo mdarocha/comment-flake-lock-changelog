@@ -52,63 +52,19 @@ jobs:
 
 ## Build filter
 
-By default, every upstream commit between the old and new `rev` of a flake input is listed in the
-changelog. For inputs like `nixpkgs`, most commits don't actually change anything that the flake
-depends on (docs, unrelated packages, CI, etc.), which makes the changelog noisy. Setting
-`build-filter` runs a build at a subset of the upstream commits and hides commits that didn't
-change the build output behind a collapsed "did not affect the build output" section.
+Not every upstream commit in a `flake.lock` bump actually changes what gets built — a `nixpkgs`
+update, for example, usually drags in a lot of commits that only touch docs, unrelated packages, or
+CI. Setting `build-filter` builds your flake at a handful of commits in the range and tucks the
+commits that turned out not to affect the build output into a collapsed "did not affect the build
+output" section, so the changelog highlights what actually matters.
 
-### How it works
+`build-filter` is a shell command that the action runs at various upstream commits and whose output
+it uses to tell "the build changed" from "the build didn't change". It's evaluated once per changed
+input (so the same command applies to `nixpkgs`, `flake-utils`, or any other input in your lockfile
+— see [environment variables](#environment-variables) below), and it only runs at a handful of
+commits per input, not every commit in the range, so it stays cheap even for large ranges.
 
-For **each** flake input that changed in the lockfile (not just `nixpkgs`), the action:
-
-1. Clones the input's upstream repository with `--filter=blob:none` (a blobless clone — cheap on
-   bandwidth since blobs are fetched lazily on checkout).
-2. Runs your `build-filter` command at the **first and last** commit of the range only.
-   - If the two outputs are identical, every commit in between is marked irrelevant — 2 builds
-     total, no further work needed.
-3. If the outputs differ, the action **bisects** the range: it builds the midpoint commit, compares
-   its output to both ends, and recurses only into the sub-ranges whose endpoints disagree. Ranges
-   whose endpoints already agree are skipped entirely.
-
-This costs O(k log n) builds, where `n` is the number of commits in the range and `k` is the number
-of times the output actually changes — versus O(n) for a naive linear scan. Worst case (every
-commit changes the output) is still bounded at ~2n builds; best case (no commit matters) is 2
-builds regardless of range size.
-
-Because the algorithm only compares the *build output*, not the diff, it works even when the
-relationship between commit content and build output isn't obvious — e.g. it correctly ignores
-reverts, commits that touch the source but not any derivation actually used, or refactors that
-don't change what gets built.
-
-### What your `build-filter` command must output
-
-The command is run once per commit that the bisection needs to inspect. Its **stdout** is treated
-as an opaque fingerprint of the build for that commit — the action never inspects its meaning,
-only compares it for equality between commits. It should be:
-
-- **Deterministic** for a given commit — the same commit must always produce the same fingerprint,
-  otherwise the bisection will produce inconsistent (and possibly contradictory) results.
-- **Sensitive to build-relevant changes, and only those** — it should change whenever something a
-  consumer of the flake would care about changes (e.g. a package's contents or version), and stay
-  the same otherwise (e.g. ignore embedded timestamps or build-machine-specific paths).
-- A single line is enough; a Nix store path (e.g. the output of `nix build --print-out-paths`) or a
-  content hash both work well.
-
-A non-zero exit code from the command is treated as a failure of the whole build-filter step for
-that input: the action logs a warning and falls back to showing every commit for that input
-unfiltered, rather than guessing.
-
-### Environment variables
-
-The command runs as-is (no extra Nix flags are injected) in the Actions workspace — the same
-directory your workflow already checked out — with these variables set:
-
-| Variable | Description |
-| :-- | :-- |
-| `CFLC_INPUT_NAME` | The name of the flake input being tested, e.g. `nixpkgs`. Use this instead of hardcoding an input name so the same command works for **every** input that changed, not just one. |
-| `CFLC_INPUT_PATH` | Path to the upstream checkout, at the commit currently being tested. |
-| `CFLC_INPUT_REV` | The commit SHA currently checked out at `CFLC_INPUT_PATH`. |
+### Example usage
 
 ```yaml
 - uses: mdarocha/comment-flake-lock-changelog@main
@@ -117,18 +73,45 @@ directory your workflow already checked out — with these variables set:
     build-filter: 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH" --print-out-paths'
 ```
 
-Using `$CFLC_INPUT_NAME` lets one `build-filter` command handle every input in the lockfile. A
-command that hardcodes a single input name (e.g. always `--override-input nixpkgs ...`) will
-silently override the wrong input whenever a *different* input's history is being bisected, which
-gives meaningless or broken build results for that input.
+This overrides whichever input is currently being tested with the upstream checkout at the commit
+being tested, builds it, and prints the resulting store path — which the action uses as the
+fingerprint for that commit.
 
-### A note on inputs that change together
+### Environment variables
 
-When a PR updates multiple inputs at once, each input's commit range is bisected independently, and
-the build for input A is always run against the **other** inputs pinned at their final (post-update)
-versions — not their pre-update versions. This mirrors what the flake will actually build with once
-the whole PR is merged, so it's the right comparison for "does this commit matter for my final flake
-output". It does mean that if two inputs' updates are entangled (e.g. a `nixpkgs` bump that only
-builds because a `flake-utils` bump also landed), bisecting `nixpkgs` alone won't observe an
-inconsistent intermediate state — the other input is never rolled back, so the fingerprint
-differences you see are attributable to the input actually being bisected.
+| Variable | Description |
+| :-- | :-- |
+| `CFLC_INPUT_NAME` | The name of the flake input being tested, e.g. `nixpkgs`. Use it instead of hardcoding an input name in your command, so the same `build-filter` works for every input in the lockfile. |
+| `CFLC_INPUT_PATH` | Path to the upstream checkout, at the commit currently being tested. |
+| `CFLC_INPUT_REV` | The commit SHA currently checked out at `CFLC_INPUT_PATH`. |
+
+### What your command should output
+
+The action treats your command's **stdout** as an opaque fingerprint — it doesn't inspect what the
+value means, it just compares it between commits. For that comparison to be meaningful, the output
+should be:
+
+- **Deterministic** — the same commit should always produce the same fingerprint.
+- **Sensitive to changes that matter, and nothing else** — it should change whenever something a
+  consumer of your flake would actually notice changes (a package version, its contents, ...), and
+  stay stable otherwise (ignore embedded timestamps, build-machine-specific paths, etc.).
+
+If the command exits non-zero, the action logs a warning and falls back to showing every commit for
+that input, unfiltered, rather than guessing.
+
+> [!TIP]
+> Prefer a **change sentinel** over a full build where you can. A Nix output path (like
+> `--print-out-paths` above) is already a fingerprint of the *entire* dependency closure that went
+> into it — you don't need to wait for `nix build` to finish compiling anything to get it. Something
+> like `nix eval --raw ".#packages.<system>.default.drvPath"` (or `outPath`) computes the same
+> fingerprint through evaluation alone, without building, which is typically instant even for large
+> packages. Reach for an actual `nix build` only if you need to inspect the built result itself (for
+> example, to fingerprint a specific file inside the output) rather than just detect that something
+> changed.
+
+### Inputs that change together
+
+If a PR bumps more than one input, each input is tested independently, with every *other* input held
+at its new (post-update) version for the duration. In other words, testing `nixpkgs` always happens
+against the `flake-utils` version your PR is updating *to*, never the one it's updating *from* — so
+you're seeing the same build your flake will actually produce once the whole PR lands.
