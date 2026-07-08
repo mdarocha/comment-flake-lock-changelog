@@ -66695,12 +66695,48 @@ async function run() {
   }
   const TAG_OVERHEAD = `
 ${COMMENT_TAG_PATTERN}`.length;
+  function diffHeaderBlock(diff) {
+    return [
+      `### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`,
+      "",
+      "<details><summary>Changelog</summary>",
+      "",
+      `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`
+    ].join(`
+`);
+  }
+  function noCommonAncestorBlock() {
+    return [
+      "",
+      "> [!NOTE]",
+      "> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten."
+    ].join(`
+`);
+  }
+  function closingBlock() {
+    return ["", "</details>", ""].join(`
+`);
+  }
   function buildOmittedNote(owner, repo, beforeRev, rev, count) {
     return `
 
 > [!NOTE]
 ` + `> ${count} more commit(s) were not shown (comment size limit). ` + `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})
 `;
+  }
+  function commitListItem(commit) {
+    const commitMessage = commit.message.replace(/@/g, "@‍");
+    const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
+    return `- [${commitMessage}](${commitUrl})`;
+  }
+  async function buildCommitLine(diff, commit) {
+    const item = commitListItem(commit);
+    const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
+    if (!pr) {
+      return item;
+    }
+    const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
+    return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
   }
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
@@ -66727,54 +66763,64 @@ ${COMMENT_TAG_PATTERN}`.length;
       return;
     }
   }
+  const gathered = [];
   for (const { lockfile, diffs } of allDiffsByLockfile) {
-    result.push(`## ${lockfile}`);
     for (const diff of diffs) {
       info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
       await restoreCacheForRepo(diff.owner, diff.repo);
-      result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
-      result.push("");
-      result.push("<details><summary>Changelog</summary>");
-      result.push("");
-      result.push(`[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
-      if (commits.length === 0) {
-        result.push("");
-        result.push("> [!NOTE]");
-        result.push("> Could not generate a detailed changelog — the commits have no common ancestor. " + "The repository history may have been rewritten.");
-      }
-      let bodySize = result.join(`
-`).length;
-      let omitted = 0;
-      const reserve = TAG_OVERHEAD + buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, commits.length).length + 1;
-      for (let i = 0;i < commits.length; i++) {
-        const commit = commits[i];
-        const commitMessage = commit.message.replace(/@/g, "@‍");
-        const commitUrl = commit.url.replace("https://github.com", "https://redirect.github.com");
-        const commitListItem = `- [${commitMessage}](${commitUrl})`;
-        info(`Checking for PRs associated with commit ${commit.sha}`);
-        const pr = await getPullRequestForCommit(diff.owner, diff.repo, commit.sha);
-        let line;
-        if (pr) {
-          const prUrl = pr.url.replace("https://github.com", "https://redirect.github.com");
-          line = `${commitListItem} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
-        } else {
-          line = commitListItem;
-        }
-        if (bodySize + line.length + 1 + reserve > GITHUB_COMMENT_MAX_LENGTH) {
-          omitted = commits.length - i;
-          break;
-        }
-        result.push(line);
-        bodySize += line.length + 1;
-      }
-      result.push("");
-      result.push("</details>");
-      result.push("");
+      const firstLine = commits.length > 0 ? await buildCommitLine(diff, commits[0]) : null;
+      gathered.push({ lockfile, diff, commits, firstLine });
+    }
+  }
+  let reserved = TAG_OVERHEAD;
+  const seenLockfiles = new Set;
+  for (const { lockfile, diff, commits, firstLine } of gathered) {
+    if (!seenLockfiles.has(lockfile)) {
+      seenLockfiles.add(lockfile);
+      reserved += `## ${lockfile}`.length + 1;
+    }
+    reserved += diffHeaderBlock(diff).length + 1;
+    reserved += closingBlock().length + 1;
+    if (commits.length === 0) {
+      reserved += noCommonAncestorBlock().length + 1;
+    } else {
+      reserved += firstLine.length + 1;
+      reserved += buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, commits.length).length + 1;
+    }
+  }
+  let discretionaryBudget = Math.max(0, GITHUB_COMMENT_MAX_LENGTH - result.join(`
+`).length - reserved);
+  let lastLockfile = null;
+  for (const { lockfile, diff, commits, firstLine } of gathered) {
+    if (lockfile !== lastLockfile) {
+      result.push(`## ${lockfile}`);
+      lastLockfile = lockfile;
+    }
+    result.push(diffHeaderBlock(diff));
+    if (commits.length === 0) {
+      result.push(noCommonAncestorBlock());
+      result.push(closingBlock());
       await saveCacheForRepo(diff.owner, diff.repo);
-      if (omitted > 0) {
-        result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omitted));
+      continue;
+    }
+    result.push(firstLine);
+    let omitted = 0;
+    for (let i = 1;i < commits.length; i++) {
+      const commit = commits[i];
+      info(`Checking for PRs associated with commit ${commit.sha}`);
+      const line = await buildCommitLine(diff, commit);
+      if (line.length + 1 > discretionaryBudget) {
+        omitted = commits.length - i;
+        break;
       }
+      result.push(line);
+      discretionaryBudget -= line.length + 1;
+    }
+    result.push(closingBlock());
+    await saveCacheForRepo(diff.owner, diff.repo);
+    if (omitted > 0) {
+      result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omitted));
     }
   }
   info("Posting comment to PR");

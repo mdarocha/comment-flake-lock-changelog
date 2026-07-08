@@ -20,6 +20,7 @@ const COMPARE_URL = "https://github.com/NixOS/nixpkgs/compare/aaaa1111..bbbb2222
 let moduleMocks: Array<Awaited<ReturnType<typeof mockModule>>> = [];
 let upsertCommentMock: Mock<(prNumber: number, body: string) => Promise<void>>;
 let getPullRequestDetailsMock: Mock<() => Promise<PullRequestDetails>>;
+let getFileContentAtCommitMock: Mock<(commit: string, path: string) => Promise<string>>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
 
@@ -29,6 +30,9 @@ beforeEach(async () => {
         authorLogin: "dependabot[bot]",
         body: COMPARE_URL,
     }));
+    getFileContentAtCommitMock = mock(async (commit: string, _path: string) =>
+        commit === "basesha" ? BEFORE_LOCK : AFTER_LOCK,
+    );
     compareCommitsMock = mock(async () => []);
 
     moduleMocks = [
@@ -40,9 +44,7 @@ beforeEach(async () => {
         await mockModule("~/api", () => ({
             getPullRequestChangedFiles: mock(async () => ["flake.lock"]),
             getPullRequestRefs: mock(async () => ({ base: "basesha", head: "headsha" })),
-            getFileContentAtCommit: mock(async (commit: string, _path: string) =>
-                commit === "basesha" ? BEFORE_LOCK : AFTER_LOCK,
-            ),
+            getFileContentAtCommit: getFileContentAtCommitMock,
             getPullRequestDetails: getPullRequestDetailsMock,
             compareCommits: compareCommitsMock,
             getPullRequestForCommit: mock(async () => null),
@@ -119,6 +121,54 @@ describe("run", () => {
         expect(closingIndex).toBeGreaterThan(-1);
         expect(noteIndex).toBeGreaterThan(closingIndex);
         // Room must be left for the identity tag appended by upsertComment.
+        expect(body.length).toBeLessThan(65536);
+    });
+
+    test("guarantees every input's header and first commit even when other inputs also need truncation", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+
+        const BEFORE_TWO_INPUTS = JSON.stringify({
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs", utils: "utils" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "aaaa1111", type: "github" } },
+                utils: { locked: { owner: "numtide", repo: "flake-utils", rev: "cccc3333", type: "github" } },
+            },
+        });
+        const AFTER_TWO_INPUTS = JSON.stringify({
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs", utils: "utils" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "bbbb2222", type: "github" } },
+                utils: { locked: { owner: "numtide", repo: "flake-utils", rev: "dddd4444", type: "github" } },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string, _path: string) =>
+            commit === "basesha" ? BEFORE_TWO_INPUTS : AFTER_TWO_INPUTS,
+        );
+
+        // Both inputs individually would overflow the comment size limit on their own,
+        // so satisfying both requires the reserve to be computed across all inputs up
+        // front rather than input-by-input.
+        compareCommitsMock.mockImplementation(async (owner: string, repo: string) =>
+            Array.from({ length: 2000 }, (_, i) => ({
+                sha: `${repo}-sha${i}`,
+                message: `commit ${i} in ${repo}, padded so this line is long enough to overflow the size budget`,
+                url: `https://github.com/${owner}/${repo}/commit/${repo}-sha${i}`,
+            })),
+        );
+
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("### [NixOS/nixpkgs]");
+        expect(body).toContain("### [numtide/flake-utils]");
+        expect(body).toContain("commit 0 in nixpkgs");
+        expect(body).toContain("commit 0 in flake-utils");
+        expect((body.match(/more commit\(s\) were not shown/g) ?? []).length).toBeGreaterThanOrEqual(1);
         expect(body.length).toBeLessThan(65536);
     });
 });
