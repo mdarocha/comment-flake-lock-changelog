@@ -1,5 +1,6 @@
 import * as core from "@actions/core";
 import {
+    COMMENT_TAG_PATTERN,
     GITHUB_COMMENT_MAX_LENGTH,
     compareCommits,
     getFileContentAtCommit,
@@ -69,9 +70,17 @@ export async function run(): Promise<void> {
         throw new Error(`Invalid pull request number: ${prNumber}`);
     }
 
-    // Space reserved for the identity tag appended by upsertComment and a truncation notice.
-    // This covers: tag (~48 chars) + "> [!NOTE]\n> N more commit(s) ..." (~250 chars) + small buffer.
-    const COMMIT_TRUNCATION_OVERHEAD = 350;
+    // Space reserved for the identity tag appended by upsertComment, so the commit-list
+    // truncation below leaves room for it instead of relying on api.ts's blunter fallback truncation.
+    const TAG_OVERHEAD = `\n${COMMENT_TAG_PATTERN}`.length;
+
+    function buildOmittedNote(owner: string, repo: string, beforeRev: string, rev: string, count: number): string {
+        return (
+            "\n\n> [!NOTE]\n" +
+            `> ${count} more commit(s) were not shown (comment size limit). ` +
+            `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})\n`
+        );
+    }
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -143,8 +152,15 @@ export async function run(): Promise<void> {
 
             // Track the running body size so we can truncate at commit boundaries
             // instead of cutting mid-markdown when the GitHub comment limit is approached.
+            // The reserve covers the identity tag plus the worst-case size of the omitted-commits
+            // note itself (using commits.length as the upper bound for the omitted count).
             let bodySize = result.join("\n").length;
             let omitted = 0;
+            // +1 for the newline joining the note onto `result`.
+            const reserve =
+                TAG_OVERHEAD +
+                buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, commits.length).length +
+                1;
 
             for (let i = 0; i < commits.length; i++) {
                 const commit = commits[i];
@@ -168,7 +184,7 @@ export async function run(): Promise<void> {
                 }
 
                 // Check if adding this commit would exceed the limit.
-                if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+                if (bodySize + line.length + 1 + reserve > GITHUB_COMMENT_MAX_LENGTH) {
                     omitted = commits.length - i;
                     break;
                 }
@@ -184,12 +200,7 @@ export async function run(): Promise<void> {
             await saveCacheForRepo(diff.owner, diff.repo);
 
             if (omitted > 0) {
-                result.push("");
-                result.push("> [!NOTE]");
-                result.push(
-                    `> ${omitted} more commit(s) were not shown (comment size limit). [View full comparison](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
-                );
-                result.push("");
+                result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omitted));
             }
         }
     }

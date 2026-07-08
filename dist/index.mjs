@@ -66536,11 +66536,32 @@ async function compareCommits(owner, repo, base, head) {
 var LEGACY_COMMENT_TAG_PATTERN = `<!-- thollander/actions-comment-pull-request "comment-flake-lock-changelog" -->`;
 var COMMENT_TAG_PATTERN = `<!-- mdarocha/comment-flake-lock-changelog -->`;
 var GITHUB_COMMENT_MAX_LENGTH = 65536;
+var TRUNCATION_NOTICE = `
+
+> [!NOTE]
+> The changelog was truncated because it exceeded GitHub's maximum comment size of 65,536 characters.`;
+function buildCommentBody(body2) {
+  const tag = `
+${COMMENT_TAG_PATTERN}`;
+  const full = `${body2}${tag}`;
+  if (full.length <= GITHUB_COMMENT_MAX_LENGTH) {
+    return full;
+  }
+  const available = GITHUB_COMMENT_MAX_LENGTH - tag.length - TRUNCATION_NOTICE.length;
+  const cutIndex = body2.lastIndexOf(`
+`, available);
+  const safeBody = cutIndex > 0 ? body2.slice(0, cutIndex) : body2.slice(0, available);
+  return `${safeBody}${TRUNCATION_NOTICE}${tag}`;
+}
 async function upsertComment(prNumber, body2) {
   const client = getGithubClient();
   const { repo } = context4;
-  const taggedBody = `${body2}
-${COMMENT_TAG_PATTERN}`;
+  const wouldExceed = `${body2}
+${COMMENT_TAG_PATTERN}`.length > GITHUB_COMMENT_MAX_LENGTH;
+  if (wouldExceed) {
+    warning("Comment body exceeded GitHub's maximum comment size of 65,536 characters and was truncated.");
+  }
+  const taggedBody = buildCommentBody(body2);
   function hasCommentTag(comment) {
     return comment?.body?.includes(COMMENT_TAG_PATTERN) === true || comment?.body?.includes(LEGACY_COMMENT_TAG_PATTERN) === true;
   }
@@ -66611,7 +66632,7 @@ async function restoreCacheForRepo(owner, repo) {
     const raw = fs7.readFileSync(filePath, "utf8");
     const cacheFile = JSON.parse(raw);
     for (const [k, v] of Object.entries(cacheFile.compareCommits)) {
-      compareCommitsCache.set(k, v.commits);
+      compareCommitsCache.set(k, v);
     }
     for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
       prForCommitCache.set(k, v);
@@ -66625,7 +66646,7 @@ async function saveCacheForRepo(owner, repo) {
   try {
     const compareCommitsEntries = {};
     for (const [k, commits] of compareCommitsCache.entries()) {
-      compareCommitsEntries[k] = { commits, skippedCount: 0 };
+      compareCommitsEntries[k] = commits;
     }
     const prForCommitEntries = {};
     for (const [k, v] of prForCommitCache.entries()) {
@@ -66672,7 +66693,15 @@ async function run() {
   if (isNaN(prNumber) || prNumber === 0) {
     throw new Error(`Invalid pull request number: ${prNumber}`);
   }
-  const COMMIT_TRUNCATION_OVERHEAD = 350;
+  const TAG_OVERHEAD = `
+${COMMENT_TAG_PATTERN}`.length;
+  function buildOmittedNote(owner, repo, beforeRev, rev, count) {
+    return `
+
+> [!NOTE]
+` + `> ${count} more commit(s) were not shown (comment size limit). ` + `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})
+`;
+  }
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -66717,6 +66746,7 @@ async function run() {
       let bodySize = result.join(`
 `).length;
       let omitted = 0;
+      const reserve = TAG_OVERHEAD + buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, commits.length).length + 1;
       for (let i = 0;i < commits.length; i++) {
         const commit = commits[i];
         const commitMessage = commit.message.replace(/@/g, "@‍");
@@ -66731,7 +66761,7 @@ async function run() {
         } else {
           line = commitListItem;
         }
-        if (bodySize + line.length + 1 + COMMIT_TRUNCATION_OVERHEAD > GITHUB_COMMENT_MAX_LENGTH) {
+        if (bodySize + line.length + 1 + reserve > GITHUB_COMMENT_MAX_LENGTH) {
           omitted = commits.length - i;
           break;
         }
@@ -66743,10 +66773,7 @@ async function run() {
       result.push("");
       await saveCacheForRepo(diff.owner, diff.repo);
       if (omitted > 0) {
-        result.push("");
-        result.push("> [!NOTE]");
-        result.push(`> ${omitted} more commit(s) were not shown (comment size limit). [View full comparison](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`);
-        result.push("");
+        result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omitted));
       }
     }
   }

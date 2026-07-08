@@ -18,8 +18,10 @@ const AFTER_LOCK = JSON.stringify({
 const COMPARE_URL = "https://github.com/NixOS/nixpkgs/compare/aaaa1111..bbbb2222";
 
 let moduleMocks: Array<Awaited<ReturnType<typeof mockModule>>> = [];
-let upsertCommentMock: Mock<() => Promise<void>>;
+let upsertCommentMock: Mock<(prNumber: number, body: string) => Promise<void>>;
 let getPullRequestDetailsMock: Mock<() => Promise<PullRequestDetails>>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let compareCommitsMock: Mock<any>;
 
 beforeEach(async () => {
     upsertCommentMock = mock(async () => {});
@@ -27,6 +29,7 @@ beforeEach(async () => {
         authorLogin: "dependabot[bot]",
         body: COMPARE_URL,
     }));
+    compareCommitsMock = mock(async () => []);
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
@@ -41,7 +44,7 @@ beforeEach(async () => {
                 commit === "basesha" ? BEFORE_LOCK : AFTER_LOCK,
             ),
             getPullRequestDetails: getPullRequestDetailsMock,
-            compareCommits: mock(async () => ({ commits: [], skippedCount: 0 })),
+            compareCommits: compareCommitsMock,
             getPullRequestForCommit: mock(async () => null),
             upsertComment: upsertCommentMock,
             restoreCacheForRepo: mock(async () => {}),
@@ -74,5 +77,48 @@ describe("run", () => {
         const { run } = await import("~/main");
         await run();
         expect(upsertCommentMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("places the no-common-ancestor note outside the accordion", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        const noteIndex = body.indexOf("[!WARNING]") !== -1 ? body.indexOf("[!WARNING]") : body.indexOf("[!NOTE]");
+        const closingIndex = body.indexOf("</details>");
+        expect(noteIndex).toBeGreaterThan(-1);
+        expect(closingIndex).toBeGreaterThan(-1);
+        expect(noteIndex).toBeLessThan(closingIndex);
+    });
+
+    test("places the omitted-commits note outside the accordion and reserves room for the identity tag", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        compareCommitsMock.mockImplementation(async () =>
+            Array.from({ length: 2000 }, (_, i) => ({
+                sha: `sha${i}`,
+                message: `commit number ${i} padded so the list overflows the comment size limit`,
+                url: `https://github.com/NixOS/nixpkgs/commit/sha${i}`,
+            })),
+        );
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        const closingIndex = body.indexOf("</details>");
+        const noteIndex = body.indexOf("more commit(s) were not shown");
+        expect(noteIndex).toBeGreaterThan(-1);
+        expect(closingIndex).toBeGreaterThan(-1);
+        expect(noteIndex).toBeGreaterThan(closingIndex);
+        // Room must be left for the identity tag appended by upsertComment.
+        expect(body.length).toBeLessThan(65536);
     });
 });
