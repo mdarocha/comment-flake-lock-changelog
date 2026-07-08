@@ -97,7 +97,7 @@ export async function run(): Promise<void> {
             result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);
 
             result.push("");
-            result.push("<details open><summary>Changelog</summary>");
+            result.push("<details><summary>Changelog</summary>");
             result.push("");
 
             result.push(
