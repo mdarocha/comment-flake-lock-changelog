@@ -21997,6 +21997,18 @@ async function getPullRequestForCommit(owner, repo, commit) {
     url: associatedPRs[0].html_url
   };
 }
+async function getPullRequestDetails(prNumber) {
+  const client = getGithubClient();
+  const { repo } = context2;
+  const { data } = await client.rest.pulls.get({
+    ...repo,
+    pull_number: prNumber
+  });
+  return {
+    authorLogin: data.user.login,
+    body: data.body ?? ""
+  };
+}
 
 // src/main.ts
 function parseLockfile(content) {
@@ -22038,11 +22050,24 @@ async function run() {
     return;
   }
   const { base, head } = await getPullRequestRefs(prNumber);
+  const prDetails = await getPullRequestDetails(prNumber);
+  const allDiffsByLockfile = [];
   for (const lockfile of lockfiles) {
-    result.push(`## ${lockfile}`);
     const before = parseLockfile(await getFileContentAtCommit(base, lockfile));
     const after = parseLockfile(await getFileContentAtCommit(head, lockfile));
     const diffs = getLockfileDiffs(before, after);
+    allDiffsByLockfile.push({ lockfile, diffs });
+  }
+  if (prDetails.authorLogin === "dependabot[bot]") {
+    const allCompareUrls = allDiffsByLockfile.flatMap(({ diffs }) => diffs.map((d) => `https://github.com/${d.owner}/${d.repo}/compare/${d.beforeRev}..${d.rev}`));
+    const allPresent = allCompareUrls.every((url) => prDetails.body.includes(url));
+    if (allPresent) {
+      info("Skipping comment — flake.lock changelog already present in dependabot PR description");
+      return;
+    }
+  }
+  for (const { lockfile, diffs } of allDiffsByLockfile) {
+    result.push(`## ${lockfile}`);
     for (const diff of diffs) {
       info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
       result.push(`### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`);

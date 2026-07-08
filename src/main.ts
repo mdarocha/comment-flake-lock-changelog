@@ -4,6 +4,7 @@ import {
     compareCommits,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
+    getPullRequestDetails,
     getPullRequestForCommit,
     getPullRequestRefs,
     upsertComment,
@@ -71,7 +72,6 @@ export async function run(): Promise<void> {
     const COMMIT_TRUNCATION_OVERHEAD = 350;
 
     const result = ["# Flake inputs changelog"];
-
     core.info(`Fetching changed files for PR #${prNumber}`);
     const files = await getPullRequestChangedFiles(prNumber);
     const lockfiles = files.filter((file) => file.endsWith("flake.lock"));
@@ -82,14 +82,36 @@ export async function run(): Promise<void> {
     }
 
     const { base, head } = await getPullRequestRefs(prNumber);
+    const prDetails = await getPullRequestDetails(prNumber);
 
-    // TODO cache changelogs if multiple lockfiles have the same refs and diffs
+    // Pass 1: compute all diffs across all lockfiles (no compareCommits calls yet)
+    type LockfileDiff = LockfileItem & { beforeRev: string };
+    const allDiffsByLockfile: Array<{ lockfile: string; diffs: LockfileDiff[] }> = [];
+
     for (const lockfile of lockfiles) {
-        result.push(`## ${lockfile}`);
-
         const before = parseLockfile(await getFileContentAtCommit(base, lockfile));
         const after = parseLockfile(await getFileContentAtCommit(head, lockfile));
         const diffs = getLockfileDiffs(before, after);
+        allDiffsByLockfile.push({ lockfile, diffs });
+    }
+
+    // Dependabot skip check: if all compare URLs already appear in the PR body, no comment needed
+    if (prDetails.authorLogin === "dependabot[bot]") {
+        const allCompareUrls = allDiffsByLockfile.flatMap(({ diffs }) =>
+            diffs.map((d) => `https://github.com/${d.owner}/${d.repo}/compare/${d.beforeRev}..${d.rev}`),
+        );
+        const allPresent = allCompareUrls.every((url) => prDetails.body.includes(url));
+        if (allPresent) {
+            core.info("Skipping comment — flake.lock changelog already present in dependabot PR description");
+            return;
+        }
+    }
+
+    // Pass 2: full changelog generation
+
+    // TODO cache changelogs if multiple lockfiles have the same refs and diffs
+    for (const { lockfile, diffs } of allDiffsByLockfile) {
+        result.push(`## ${lockfile}`);
 
         for (const diff of diffs) {
             core.info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
