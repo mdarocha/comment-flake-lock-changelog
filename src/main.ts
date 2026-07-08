@@ -54,13 +54,17 @@ function parseLockfile(content: string): Lockfile {
         );
 }
 
-function getLockfileDiffs(before: Lockfile, after: Lockfile): Array<LockfileItem & { beforeRev: string }> {
+function getLockfileDiffs(
+    before: Lockfile,
+    after: Lockfile,
+): Array<LockfileItem & { beforeRev: string; name: string }> {
     return Object.entries(after)
         .filter(([_key, value]) => value.type === "github")
         .filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev)
         .map(([key, value]) => ({
             ...value,
             beforeRev: before[key].rev,
+            name: key,
         }));
 }
 
@@ -116,7 +120,7 @@ export async function run(): Promise<void> {
     const prDetails = await getPullRequestDetails(prNumber);
 
     // Pass 1: compute all diffs across all lockfiles (no compareCommits calls yet)
-    type LockfileDiff = LockfileItem & { beforeRev: string };
+    type LockfileDiff = LockfileItem & { beforeRev: string; name: string };
     const allDiffsByLockfile: Array<{ lockfile: string; diffs: LockfileDiff[] }> = [];
 
     for (const lockfile of lockfiles) {
