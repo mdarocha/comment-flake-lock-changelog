@@ -12,7 +12,7 @@ inputs:
     required: false
     default: ${{ github.token }}
   build-filter:
-    description: "When set, run this shell command at each upstream commit to determine build relevance. The command receives CFLC_INPUT_NAME (the flake input's name, e.g. `nixpkgs`), CFLC_INPUT_PATH (path to the upstream checkout), and CFLC_INPUT_REV (commit SHA) as environment variables, so one command can support every input in the lockfile, not just a single hardcoded one. Its stdout is used as a build fingerprint — commits that change the output are marked relevant. Requires git in PATH."
+    description: "Shell command that builds your flake, used to hide changelog commits that don't affect the build output. See the README's 'Build filter' section for details."
     required: false
     default: ""
 runs:
