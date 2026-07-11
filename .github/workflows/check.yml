@@ -17,6 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
-      - uses: mdarocha/nix-magic-setup@main
+      - uses: mdarocha/nix-magic-setup@815fe72057b1c901e5f6d987828d9a9ad0320df1 # main
 
       - run: devenv test
