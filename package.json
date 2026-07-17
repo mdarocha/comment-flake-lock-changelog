@@ -14,7 +14,7 @@
     "@trivago/prettier-plugin-sort-imports": "6.0.2",
     "@types/bun": "latest",
     "eslint": "9.39.4",
-    "eslint-plugin-github": "6.0.0",
+    "eslint-plugin-github": "6.1.1",
     "prettier": "3.9.4"
   },
   "peerDependencies": {
