@@ -25,6 +25,6 @@
     "@actions/core": "3.0.1",
     "@actions/github": "9.1.1",
     "baseline-browser-mapping": "2.10.42",
-    "caniuse-lite": "1.0.30001803"
+    "caniuse-lite": "1.0.30001805"
   }
 }
