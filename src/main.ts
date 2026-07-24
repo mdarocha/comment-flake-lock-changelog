@@ -80,14 +80,20 @@ export async function run(): Promise<void> {
     // truncation below leaves room for it instead of relying on api.ts's blunter fallback truncation.
     const TAG_OVERHEAD = `\n${COMMENT_TAG_PATTERN}`.length;
 
+    function shortSha(sha: string): string {
+        return sha.slice(0, 7);
+    }
+
     function diffHeaderBlock(diff: { owner: string; repo: string; beforeRev: string; rev: string }): string {
         return [
             `### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`,
             "",
-            "<details><summary>Changelog</summary>",
-            "",
-            `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
+            `[\`${shortSha(diff.beforeRev)}\` -> \`${shortSha(diff.rev)}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`,
         ].join("\n");
+    }
+
+    function changelogAccordionOpenBlock(): string {
+        return ["", "<details><summary>Changelog</summary>", ""].join("\n");
     }
 
     function noCommonAncestorBlock(): string {
@@ -117,8 +123,8 @@ export async function run(): Promise<void> {
 
     function buildOmittedNote(owner: string, repo: string, beforeRev: string, rev: string, count: number): string {
         return (
-            "\n\n> [!NOTE]\n" +
-            `> ${count} more commit(s) were not shown (comment size limit). ` +
+            "\n\n> " +
+            `${count} more commit(s) were not shown (comment size limit). ` +
             `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})\n`
         );
     }
@@ -232,6 +238,7 @@ export async function run(): Promise<void> {
             reserved += `## ${lockfile}`.length + 1;
         }
         reserved += diffHeaderBlock(diff).length + 1;
+        reserved += changelogAccordionOpenBlock().length + 1;
         reserved += closingBlock().length + 1;
 
         if (relevant.length === 0 && irrelevant.length === 0) {
@@ -268,11 +275,18 @@ export async function run(): Promise<void> {
         result.push(diffHeaderBlock(diff));
 
         if (relevant.length === 0 && irrelevant.length === 0) {
+            result.push(changelogAccordionOpenBlock());
             result.push(closingBlock());
             result.push(noCommonAncestorBlock());
             await saveCacheForRepo(diff.owner, diff.repo);
             continue;
         }
+
+        if (relevant.length === 0) {
+            result.push(allIrrelevantNoteBlock());
+        }
+
+        result.push(changelogAccordionOpenBlock());
 
         let omittedRelevant = 0;
         if (relevant.length > 0) {
@@ -294,8 +308,7 @@ export async function run(): Promise<void> {
         }
 
         // The irrelevant accordion (and its own omitted-commits note, placed right
-        // after its closing tag) nests inside the outer accordion, same as the outer
-        // accordion's own note nests outside of it below.
+        // after its closing tag) nests inside the outer accordion.
         if (irrelevant.length > 0) {
             result.push(irrelevantAccordionOpenBlock(irrelevant.length));
 
@@ -325,9 +338,7 @@ export async function run(): Promise<void> {
 
         await saveCacheForRepo(diff.owner, diff.repo);
 
-        if (relevant.length === 0) {
-            result.push(allIrrelevantNoteBlock());
-        } else if (omittedRelevant > 0) {
+        if (omittedRelevant > 0) {
             result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedRelevant));
         }
     }
