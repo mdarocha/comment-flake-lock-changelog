@@ -254,4 +254,140 @@ describe("run", () => {
         expect(body).toContain("second commit");
         expect(body).not.toContain("that did not affect the build output");
     });
+
+    test("resolves the flake input path through a follows-deduplicated lock node key", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+
+        // Mirrors a real project where another input (e.g. devenv) locks its own nixpkgs
+        // copy: Nix dedupes the project's own (non-`follows`) nixpkgs input into a
+        // suffixed node key ("nixpkgs_2") even though flake.nix only ever calls it
+        // "nixpkgs" — that's the name build-filter's CFLC_INPUT_NAME needs to be.
+        const dedupedBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs_2", devenv: "devenv" } },
+                devenv: { inputs: { nixpkgs: "nixpkgs" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "devenv-pin", type: "github" } },
+                nixpkgs_2: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "aaaa1111", type: "github" } },
+            },
+        });
+        const dedupedAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs_2", devenv: "devenv" } },
+                devenv: { inputs: { nixpkgs: "nixpkgs" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "devenv-pin", type: "github" } },
+                nixpkgs_2: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "bbbb2222", type: "github" } },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? dedupedBefore : dedupedAfter,
+        );
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { owner: string; repo: string; name: string },
+            string,
+        ];
+        expect(passedDiff.name).toBe("nixpkgs");
+        expect(warningMock).not.toHaveBeenCalled();
+    });
+
+    test("resolves a nested input path when the changed node is only reachable through another input", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+
+        const nestedBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-parts": "flake-parts_2" } },
+                "flake-parts_2": { inputs: { nixpkgs: "nixpkgs_4" } },
+                nixpkgs_4: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "aaaa1111", type: "github" } },
+            },
+        });
+        const nestedAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-parts": "flake-parts_2" } },
+                "flake-parts_2": { inputs: { nixpkgs: "nixpkgs_4" } },
+                nixpkgs_4: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "bbbb2222", type: "github" } },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? nestedBefore : nestedAfter,
+        );
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { owner: string; repo: string; name: string },
+            string,
+        ];
+        expect(passedDiff.name).toBe("flake-parts/nixpkgs");
+    });
+
+    test("falls back to the raw node key and warns when no input path resolves to it", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+
+        // A node not reachable from root at all shouldn't normally happen, but the
+        // resolver must degrade to the old (broken but non-crashing) behavior instead
+        // of throwing.
+        const unreachableBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: {} },
+                orphan: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "aaaa1111", type: "github" } },
+            },
+        });
+        const unreachableAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: {} },
+                orphan: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "bbbb2222", type: "github" } },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? unreachableBefore : unreachableAfter,
+        );
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { owner: string; repo: string; name: string },
+            string,
+        ];
+        expect(passedDiff.name).toBe("orphan");
+        expect(warningMock).toHaveBeenCalledTimes(1);
+        expect(warningMock.mock.calls[0][0]).toContain(
+            'Could not resolve a flake input path for flake.lock node "orphan"',
+        );
+    });
 });

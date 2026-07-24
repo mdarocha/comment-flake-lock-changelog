@@ -66805,7 +66805,9 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
     const irrelevant = [];
     for (let i = 0;i < commits.length; i++) {
       const isRelevant = outputs.get(i + 1) !== outputs.get(i);
-      info(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+      if (isDebug()) {
+        debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+      }
       if (isRelevant) {
         relevant.push(commits[i]);
       } else {
@@ -66820,30 +66822,80 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
 }
 
 // src/main.ts
-function parseLockfile(content) {
+function parseRawLockfile(content) {
   if (content === "") {
-    return {};
+    return { root: "root", nodes: {} };
   }
   const data = JSON.parse(content);
-  return Object.entries(data.nodes).filter((entry) => entry[0] !== "root").filter((entry) => entry[1]["locked"]["type"] === "github").map((entry) => [
-    entry[0],
-    {
-      type: entry[1]["locked"]["type"],
-      owner: entry[1]["locked"]["owner"],
-      repo: entry[1]["locked"]["repo"],
-      rev: entry[1]["locked"]["rev"]
-    }
-  ]).reduce((acc, [key, value]) => ({
-    [key]: value,
-    ...acc
-  }), {});
+  return { root: data.root ?? "root", nodes: data.nodes ?? {} };
 }
-function getLockfileDiffs(before, after) {
-  return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => ({
-    ...value,
-    beforeRev: before[key].rev,
-    name: key
-  }));
+function toLockfile(raw) {
+  return Object.entries(raw.nodes).filter(([key]) => key !== raw.root).filter(([, node]) => node.locked?.type === "github").reduce((acc, [key, node]) => {
+    const locked = node.locked;
+    acc[key] = { type: locked.type, owner: locked.owner, repo: locked.repo, rev: locked.rev };
+    return acc;
+  }, {});
+}
+function resolveInputPath(lockfile, targetKey) {
+  const { nodes, root } = lockfile;
+  const queue = [{ node: root, path: [] }];
+  const visited = new Set([root]);
+  const followsCandidates = [];
+  while (queue.length > 0) {
+    const { node, path: path13 } = queue.shift();
+    for (const [name, value] of Object.entries(nodes[node]?.inputs ?? {})) {
+      if (Array.isArray(value)) {
+        followsCandidates.push(value);
+        continue;
+      }
+      const nextPath = [...path13, name];
+      if (value === targetKey) {
+        return nextPath.join("/");
+      }
+      if (!visited.has(value)) {
+        visited.add(value);
+        queue.push({ node: value, path: nextPath });
+      }
+    }
+  }
+  for (const candidate of followsCandidates) {
+    if (resolveFollowsPath(nodes, root, candidate) === targetKey) {
+      return candidate.join("/");
+    }
+  }
+  return;
+}
+function resolveFollowsPath(nodes, root, path13) {
+  let current = root;
+  for (const segment of path13) {
+    const value = nodes[current]?.inputs?.[segment];
+    if (value === undefined) {
+      return;
+    }
+    if (Array.isArray(value)) {
+      const resolved = resolveFollowsPath(nodes, root, value);
+      if (resolved === undefined) {
+        return;
+      }
+      current = resolved;
+    } else {
+      current = value;
+    }
+  }
+  return current;
+}
+function getLockfileDiffs(before, after, afterRaw) {
+  return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => {
+    const name = resolveInputPath(afterRaw, key);
+    if (name === undefined) {
+      warning(`Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` + "falling back to the raw node key for build-filter's CFLC_INPUT_NAME, which will likely not " + "match any real --override-input target.");
+    }
+    return {
+      ...value,
+      beforeRev: before[key].rev,
+      name: name ?? key
+    };
+  });
 }
 async function run() {
   const prNumber = Number(getInput("pull-request-number"));
@@ -66924,9 +66976,11 @@ ${COMMENT_TAG_PATTERN}`.length;
   const prDetails = await getPullRequestDetails(prNumber);
   const allDiffsByLockfile = [];
   for (const lockfile of lockfiles) {
-    const before = parseLockfile(await getFileContentAtCommit(base, lockfile));
-    const after = parseLockfile(await getFileContentAtCommit(head, lockfile));
-    const diffs = getLockfileDiffs(before, after);
+    const beforeRaw = parseRawLockfile(await getFileContentAtCommit(base, lockfile));
+    const afterRaw = parseRawLockfile(await getFileContentAtCommit(head, lockfile));
+    const before = toLockfile(beforeRaw);
+    const after = toLockfile(afterRaw);
+    const diffs = getLockfileDiffs(before, after, afterRaw);
     allDiffsByLockfile.push({ lockfile, diffs });
   }
   if (prDetails.authorLogin === "dependabot[bot]") {
