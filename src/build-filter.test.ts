@@ -158,3 +158,59 @@ describe("filterCommitsByBuildRelevance", () => {
         expect(buildShas).toEqual(["before", "c1"]);
     });
 });
+
+describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
+    let coreMock: Awaited<ReturnType<typeof mockModule>>;
+    let debugMock: ReturnType<typeof mock>;
+    let debugEnabled = false;
+
+    beforeEach(async () => {
+        debugEnabled = false;
+        debugMock = mock(() => {});
+        coreMock = await mockModule("@actions/core", () => ({
+            info: mock(() => {}),
+            warning: mock(() => {}),
+            isDebug: mock(() => debugEnabled),
+            debug: debugMock,
+        }));
+    });
+
+    afterEach(() => {
+        coreMock.dispose();
+    });
+
+    // @actions/core's debug() (like info()) writes to stdout unconditionally — the
+    // Actions runner UI is what hides "debug"-level lines when step debugging isn't
+    // enabled, not the client. A per-commit line over a range with hundreds or
+    // thousands of commits (a routine size for a nixpkgs bump) can therefore still
+    // burst enough synchronous writes to crash the action with EPIPE even if it's
+    // logged via debug() instead of info(). The fix has to skip the call entirely via
+    // isDebug(), not just downgrade its level.
+    test("skips the per-commit classification write entirely when step debugging is off", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-b" };
+
+        filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            "echo ok",
+        );
+
+        expect(debugMock).not.toHaveBeenCalled();
+    });
+
+    test("still writes the per-commit classification when step debugging is on", async () => {
+        debugEnabled = true;
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-b" };
+
+        filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            "echo ok",
+        );
+
+        expect(debugMock).toHaveBeenCalledTimes(1);
+        expect(debugMock.mock.calls[0][0]).toContain("c1 classified as relevant");
+    });
+});

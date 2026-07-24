@@ -172,9 +172,19 @@ export function filterCommitsByBuildRelevance(
         const relevant: Commit[] = [];
         const irrelevant: Commit[] = [];
 
+        // Classification itself is O(N) (one line per commit in the range, as opposed to
+        // the O(log N) build/fingerprint lines above), which can mean thousands of lines
+        // for a large range (e.g. a multi-day nixpkgs bump). @actions/core's debug/info
+        // both write to stdout unconditionally regardless of level — only the Actions
+        // runner UI hides "debug"-level lines when step debugging isn't enabled — so a
+        // burst that size risks overwhelming the log stream and crashing the whole
+        // action with EPIPE. Gate the write on isDebug() ourselves so a normal run emits
+        // none of these at all; the final summary line below always reports the totals.
         for (let i = 0; i < commits.length; i++) {
             const isRelevant = outputs.get(i + 1) !== outputs.get(i);
-            core.info(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+            if (core.isDebug()) {
+                core.debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+            }
             if (isRelevant) {
                 relevant.push(commits[i]);
             } else {

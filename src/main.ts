@@ -24,50 +24,125 @@ interface LockfileItem {
 type Lockfile = Record<string, LockfileItem>;
 type Commit = { sha: string; message: string; url: string };
 
-function parseLockfile(content: string): Lockfile {
+// A raw flake.lock node's `inputs` entries are either a direct reference to another
+// node (by key) or a `follows` alias, encoded as the absolute input path (names, not
+// node keys) from the lock file's root — see resolveInputPath below.
+type RawLockNode = { inputs?: Record<string, string | string[]>; locked?: LockfileItem };
+interface RawLockfile {
+    root: string;
+    nodes: Record<string, RawLockNode>;
+}
+
+function parseRawLockfile(content: string): RawLockfile {
     if (content === "") {
-        return {};
+        return { root: "root", nodes: {} };
+    }
+    const data = JSON.parse(content);
+    return { root: data.root ?? "root", nodes: data.nodes ?? {} };
+}
+
+function toLockfile(raw: RawLockfile): Lockfile {
+    return Object.entries(raw.nodes)
+        .filter(([key]) => key !== raw.root)
+        .filter(([, node]) => node.locked?.type === "github")
+        .reduce<Lockfile>((acc, [key, node]) => {
+            const locked = node.locked as LockfileItem;
+            acc[key] = { type: locked.type, owner: locked.owner, repo: locked.repo, rev: locked.rev };
+            return acc;
+        }, {});
+}
+
+/**
+ * Resolve the flake input path (usable with `nix flake --override-input <path> <url>`)
+ * that reaches a given flake.lock node, by walking `inputs` references starting at the
+ * lock file's root. flake.lock `nodes` keys are Nix's own internal, deduplicated node
+ * identifiers — e.g. the same nixpkgs input ends up keyed "nixpkgs_2", "nixpkgs_3", etc.
+ * whenever it's also locked (without `follows`) by another input in the graph, such as
+ * devenv/flake-parts/disko each pulling their own copy. Those keys are not valid
+ * `--override-input` targets on their own; the real path is whatever name(s) the
+ * consuming flake's own `inputs` (and, transitively, each input's `inputs`) use to reach
+ * that node. Returns undefined if no such path exists (e.g. the node isn't reachable
+ * from root at all, which shouldn't normally happen for an input flake.lock actually
+ * depends on).
+ */
+function resolveInputPath(lockfile: RawLockfile, targetKey: string): string | undefined {
+    const { nodes, root } = lockfile;
+    const queue: Array<{ node: string; path: string[] }> = [{ node: root, path: [] }];
+    const visited = new Set([root]);
+    const followsCandidates: string[][] = [];
+
+    while (queue.length > 0) {
+        const { node, path } = queue.shift() as { node: string; path: string[] };
+        for (const [name, value] of Object.entries(nodes[node]?.inputs ?? {})) {
+            if (Array.isArray(value)) {
+                // A `follows` entry is already an absolute path from root; check it directly
+                // rather than treating it as a new subtree to descend into.
+                followsCandidates.push(value);
+                continue;
+            }
+            const nextPath = [...path, name];
+            if (value === targetKey) {
+                return nextPath.join("/");
+            }
+            if (!visited.has(value)) {
+                visited.add(value);
+                queue.push({ node: value, path: nextPath });
+            }
+        }
     }
 
-    const data = JSON.parse(content);
-    return Object.entries<{
-        locked: LockfileItem;
-    }>(data.nodes)
-        .filter((entry) => entry[0] !== "root")
-        .filter((entry) => entry[1]["locked"]["type"] === "github")
-        .map(
-            (entry) =>
-                [
-                    entry[0],
-                    {
-                        type: entry[1]["locked"]["type"],
-                        owner: entry[1]["locked"]["owner"],
-                        repo: entry[1]["locked"]["repo"],
-                        rev: entry[1]["locked"]["rev"],
-                    },
-                ] satisfies [string, LockfileItem],
-        )
-        .reduce(
-            (acc, [key, value]) => ({
-                [key]: value,
-                ...acc,
-            }),
-            {},
-        );
+    for (const candidate of followsCandidates) {
+        if (resolveFollowsPath(nodes, root, candidate) === targetKey) {
+            return candidate.join("/");
+        }
+    }
+
+    return undefined;
+}
+
+function resolveFollowsPath(nodes: Record<string, RawLockNode>, root: string, path: string[]): string | undefined {
+    let current = root;
+    for (const segment of path) {
+        const value = nodes[current]?.inputs?.[segment];
+        if (value === undefined) {
+            return undefined;
+        }
+        if (Array.isArray(value)) {
+            const resolved = resolveFollowsPath(nodes, root, value);
+            if (resolved === undefined) {
+                return undefined;
+            }
+            current = resolved;
+        } else {
+            current = value;
+        }
+    }
+    return current;
 }
 
 function getLockfileDiffs(
     before: Lockfile,
     after: Lockfile,
+    afterRaw: RawLockfile,
 ): Array<LockfileItem & { beforeRev: string; name: string }> {
     return Object.entries(after)
         .filter(([_key, value]) => value.type === "github")
         .filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev)
-        .map(([key, value]) => ({
-            ...value,
-            beforeRev: before[key].rev,
-            name: key,
-        }));
+        .map(([key, value]) => {
+            const name = resolveInputPath(afterRaw, key);
+            if (name === undefined) {
+                core.warning(
+                    `Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` +
+                        "falling back to the raw node key for build-filter's CFLC_INPUT_NAME, which will likely not " +
+                        "match any real --override-input target.",
+                );
+            }
+            return {
+                ...value,
+                beforeRev: before[key].rev,
+                name: name ?? key,
+            };
+        });
 }
 
 export async function run(): Promise<void> {
@@ -168,9 +243,11 @@ export async function run(): Promise<void> {
     const allDiffsByLockfile: Array<{ lockfile: string; diffs: LockfileDiff[] }> = [];
 
     for (const lockfile of lockfiles) {
-        const before = parseLockfile(await getFileContentAtCommit(base, lockfile));
-        const after = parseLockfile(await getFileContentAtCommit(head, lockfile));
-        const diffs = getLockfileDiffs(before, after);
+        const beforeRaw = parseRawLockfile(await getFileContentAtCommit(base, lockfile));
+        const afterRaw = parseRawLockfile(await getFileContentAtCommit(head, lockfile));
+        const before = toLockfile(beforeRaw);
+        const after = toLockfile(afterRaw);
+        const diffs = getLockfileDiffs(before, after, afterRaw);
         allDiffsByLockfile.push({ lockfile, diffs });
     }
 
