@@ -10,6 +10,7 @@ This action is meant to be used as a helper to [update-flake-lock](https://githu
 | `pull-request-number` | Id of the PR that will be analyzed by the action | none, **required** |
 | `token` | Token used for authentication with Github API | `${{ github.token }}` |
 | `build-filter` | Shell command to run at each upstream commit to determine build relevance. See [Build filter](#build-filter) below. | none |
+| `build-filter-gc` | Run `nix store gc` after every `build-filter` build to reclaim disk space. See [Build filter](#build-filter) below. | `false` |
 
 ## Example usage
 
@@ -116,6 +117,21 @@ that input, unfiltered, rather than guessing.
 > avoid anything that deliberately stamps the exact commit into the output, like a NixOS config's
 > `system.nixos.revision` set from `self.rev` — that changes on every single commit by design, which
 > defeats the filter entirely.
+
+### Disk space
+
+The `path:` fetcher (what `"path:$CFLC_INPUT_PATH"` uses) copies the *entire* checked-out tree into
+the Nix store on every single build — nothing dereferences the previous commit's copy once the
+checkout moves on to the next one. For a large repo like nixpkgs, bisecting even a few dozen commits
+can pile up tens of GB of dead store paths that nothing reclaims until whatever runs `nix store gc`
+next, which can be too late if a later step in the same job needs that disk.
+
+Set `build-filter-gc: true` to run `nix store gc` after every build, bounding peak usage to roughly
+one checkout's worth instead of the whole bisection's. Only enable it if nothing else in the job
+depends on Nix store paths that aren't rooted yet at the point this action runs — a store path that
+was merely *restored* (from a build cache, say) isn't necessarily a GC root, so if this action runs
+after that restore, `build-filter-gc` can delete the very cache you just restored. Run this action
+**before** restoring any build cache in the job if you turn it on.
 
 ### Inputs that change together
 

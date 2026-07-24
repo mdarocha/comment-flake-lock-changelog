@@ -7,10 +7,12 @@ let spawnCalls: SpawnCall[] = [];
 let moduleMock: Awaited<ReturnType<typeof mockModule>>;
 // Maps a checked-out sha to the fingerprint the fake build command should "print" to stdout.
 let outputsBySha: Record<string, string> = {};
+let gcExitCode = 0;
 
 beforeEach(async () => {
     spawnCalls = [];
     outputsBySha = {};
+    gcExitCode = 0;
 
     moduleMock = await mockModule("node:child_process", () => ({
         spawnSync: mock((cmd: string, args: string[] = [], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
@@ -24,6 +26,11 @@ beforeEach(async () => {
             }
             if (cmd === "git" && args[0] === "checkout") {
                 return { status: 0, stdout: "", stderr: "" };
+            }
+            if (cmd === "nix" && args[0] === "store" && args[1] === "gc") {
+                return gcExitCode === 0
+                    ? { status: 0, stdout: "", stderr: "" }
+                    : { status: gcExitCode, stdout: "", stderr: "gc exploded" };
             }
             if (cmd === "sh") {
                 const sha = opts?.env?.["CFLC_INPUT_REV"] ?? "";
@@ -212,5 +219,74 @@ describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
 
         expect(debugMock).toHaveBeenCalledTimes(1);
         expect(debugMock.mock.calls[0][0]).toContain("c1 classified as relevant");
+    });
+});
+
+describe("filterCommitsByBuildRelevance gcBetweenBuilds", () => {
+    test("does not run nix store gc when gcBetweenBuilds is unset", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-a" };
+
+        filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            "echo ok",
+        );
+
+        expect(spawnCalls.some((c) => c.cmd === "nix" && c.args[0] === "store")).toBe(false);
+    });
+
+    test("runs nix store gc after every build when gcBetweenBuilds is true", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-b", c2: "out-b" };
+
+        filterCommitsByBuildRelevance(
+            [
+                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+            ],
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2", name: "flake-utils" },
+            'echo "$CFLC_INPUT_REV"',
+            { gcBetweenBuilds: true },
+        );
+
+        // gc should run exactly once per build, immediately after it, not just once at
+        // the end: endpoints "before"/"c2" build first, then the bisect builds the
+        // midpoint "c1" to check whether it's needed as a boundary.
+        const commandOrder = spawnCalls
+            .filter((c) => c.cmd === "sh" || (c.cmd === "nix" && c.args[0] === "store"))
+            .map((c) => (c.cmd === "sh" ? `build:${c.env?.["CFLC_INPUT_REV"]}` : "gc"));
+        expect(commandOrder).toEqual(["build:before", "gc", "build:c2", "gc", "build:c1", "gc"]);
+    });
+
+    test("warns but does not throw when nix store gc fails", async () => {
+        const warnings: string[] = [];
+        const coreMock = await mockModule("@actions/core", () => ({
+            info: mock(() => {}),
+            warning: mock((message: string) => {
+                warnings.push(message);
+            }),
+            isDebug: mock(() => false),
+            debug: mock(() => {}),
+        }));
+        gcExitCode = 1;
+
+        try {
+            const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+            outputsBySha = { before: "out-a", c1: "out-a" };
+
+            const { relevant, irrelevant } = filterCommitsByBuildRelevance(
+                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+                "echo ok",
+                { gcBetweenBuilds: true },
+            );
+
+            expect(relevant).toEqual([]);
+            expect(irrelevant).toHaveLength(1);
+            expect(warnings.some((w) => w.includes("nix store gc"))).toBe(true);
+        } finally {
+            coreMock.dispose();
+        }
     });
 });
