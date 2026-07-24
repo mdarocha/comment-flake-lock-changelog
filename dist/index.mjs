@@ -66830,13 +66830,24 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
   try {
     const repoPath = path12.join(tmpDir, "repo");
     const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
-    info(`build-filter: cloning ${repoUrl}`);
-    const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
-    if (cloneResult.exitCode !== 0) {
-      throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
-    }
     const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
     const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
+    const candidateShas = [...new Set(allShas)];
+    const initResult = spawnCmd(["git", "init", repoPath]);
+    if (initResult.exitCode !== 0) {
+      throw new Error(`Failed to init repo at ${repoPath}: ${initResult.stderr}`);
+    }
+    const remoteResult = spawnCmd(["git", "remote", "add", "origin", repoUrl], { cwd: repoPath });
+    if (remoteResult.exitCode !== 0) {
+      throw new Error(`Failed to add remote ${repoUrl}: ${remoteResult.stderr}`);
+    }
+    info(`build-filter: fetching ${candidateShas.length} candidate commit(s) from ${repoUrl}`);
+    const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", ...candidateShas], {
+      cwd: repoPath
+    });
+    if (fetchResult.exitCode !== 0) {
+      throw new Error(`Failed to fetch commits from ${repoUrl}: ${fetchResult.stderr}`);
+    }
     const cmdParts = ["sh", "-c", buildCommand];
     const buildFn = (sha) => {
       info(`build-filter: building ${sha}`);
@@ -67057,7 +67068,7 @@ ${COMMENT_TAG_PATTERN}`.length;
     const diffs = getLockfileDiffs(before, after, afterRaw);
     allDiffsByLockfile.push({ lockfile, diffs });
   }
-  if (prDetails.authorLogin === "dependabot[bot]") {
+  if (!buildFilter && prDetails.authorLogin === "dependabot[bot]") {
     const allCompareUrls = allDiffsByLockfile.flatMap(({ diffs }) => diffs.map((d) => `https://github.com/${d.owner}/${d.repo}/compare/${d.beforeRev}..${d.rev}`));
     const allPresent = allCompareUrls.every((url2) => prDetails.body.includes(url2));
     if (allPresent) {

@@ -151,13 +151,16 @@ function bisect(
 /**
  * Filter commits by whether they affect the build output.
  *
- * The upstream repo is cloned and checked out at various commits. For each build,
- * the user-provided build command is run as-is in process.cwd() (the Actions workspace)
- * with CFLC_INPUT_NAME set to the flake input's name, CFLC_INPUT_PATH set to the
- * upstream checkout, and CFLC_INPUT_REV set to the SHA. CFLC_INPUT_NAME lets a single
- * build command handle whichever input is currently being bisected (e.g.
- * `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`), instead of hardcoding
- * one input name. The command's stdout is used as the build fingerprint.
+ * Only the commits the bisect can possibly check out (the range's endpoints plus
+ * every commit in between) are fetched from the upstream repo, each as its own
+ * isolated, blobless, depth-1 commit — not a full clone of the repo's history. For
+ * each build, the user-provided build command is run as-is in process.cwd() (the
+ * Actions workspace) with CFLC_INPUT_NAME set to the flake input's name,
+ * CFLC_INPUT_PATH set to the upstream checkout, and CFLC_INPUT_REV set to the SHA.
+ * CFLC_INPUT_NAME lets a single build command handle whichever input is currently
+ * being bisected (e.g. `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`),
+ * instead of hardcoding one input name. The command's stdout is used as the build
+ * fingerprint.
  *
  * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
  * k = number of output change points, instead of O(N) for a linear scan.
@@ -190,13 +193,6 @@ export function filterCommitsByBuildRelevance(
         const repoPath = path.join(tmpDir, "repo");
         const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
 
-        core.info(`build-filter: cloning ${repoUrl}`);
-        // Blobless clone: fetch tree metadata only; blobs are fetched on demand during checkout.
-        const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
-        if (cloneResult.exitCode !== 0) {
-            throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
-        }
-
         // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha. The final element
         // is always diff.rev (the actual head of the range) rather than commits[N-1].sha:
         // compareCommits' underlying API caps how many commits it returns per call, so if
@@ -207,6 +203,31 @@ export function filterCommitsByBuildRelevance(
             lastCommitSha === diff.rev
                 ? [diff.beforeRev, ...commits.map((c) => c.sha)]
                 : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
+        // The bisect never checks out anything outside allShas, so fetch exactly those
+        // commits — deduplicated, each pulled in as an isolated shallow tip rather than
+        // walking the repo's real history — instead of cloning the whole repo. For a
+        // large history like nixpkgs, this turns a clone that has to walk the entire
+        // commit graph into a fetch of a few dozen standalone trees.
+        const candidateShas = [...new Set(allShas)];
+
+        const initResult = spawnCmd(["git", "init", repoPath]);
+        if (initResult.exitCode !== 0) {
+            throw new Error(`Failed to init repo at ${repoPath}: ${initResult.stderr}`);
+        }
+        const remoteResult = spawnCmd(["git", "remote", "add", "origin", repoUrl], { cwd: repoPath });
+        if (remoteResult.exitCode !== 0) {
+            throw new Error(`Failed to add remote ${repoUrl}: ${remoteResult.stderr}`);
+        }
+
+        core.info(`build-filter: fetching ${candidateShas.length} candidate commit(s) from ${repoUrl}`);
+        // Blobless, depth-1 fetch: tree metadata only, no ancestor history; blobs are
+        // fetched on demand during checkout via the promisor remote.
+        const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", ...candidateShas], {
+            cwd: repoPath,
+        });
+        if (fetchResult.exitCode !== 0) {
+            throw new Error(`Failed to fetch commits from ${repoUrl}: ${fetchResult.stderr}`);
+        }
 
         const cmdParts = ["sh", "-c", buildCommand];
 

@@ -24,7 +24,13 @@ beforeEach(async () => {
             if (cmd === "git" && args[0] === "--version") {
                 return { status: 0, stdout: "git version 2.43.0", stderr: "" };
             }
-            if (cmd === "git" && args[0] === "clone") {
+            if (cmd === "git" && args[0] === "init") {
+                return { status: 0, stdout: "", stderr: "" };
+            }
+            if (cmd === "git" && args[0] === "remote") {
+                return { status: 0, stdout: "", stderr: "" };
+            }
+            if (cmd === "git" && args[0] === "fetch") {
                 return { status: 0, stdout: "", stderr: "" };
             }
             if (cmd === "git" && args[0] === "checkout") {

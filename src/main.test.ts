@@ -102,6 +102,17 @@ describe("run", () => {
         expect(upsertCommentMock).not.toHaveBeenCalled();
     });
 
+    test("still posts a comment for dependabot when build-filter is set, even if compare URLs are already present", async () => {
+        // build-filter's relevant/irrelevant split is information dependabot's own PR
+        // description never has, so it's worth posting even when the redundant-compare-URL
+        // skip would otherwise apply.
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+        expect(upsertCommentMock).toHaveBeenCalledTimes(1);
+    });
+
     test("posts comment when dependabot PR body is missing a compare URL", async () => {
         getPullRequestDetailsMock.mockImplementation(async () => ({
             authorLogin: "dependabot[bot]",

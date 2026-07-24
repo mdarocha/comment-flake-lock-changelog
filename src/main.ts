@@ -255,8 +255,11 @@ export async function run(): Promise<void> {
         allDiffsByLockfile.push({ lockfile, diffs });
     }
 
-    // Dependabot skip check: if all compare URLs already appear in the PR body, no comment needed
-    if (prDetails.authorLogin === "dependabot[bot]") {
+    // Dependabot skip check: if all compare URLs already appear in the PR body, no comment
+    // needed — but only when build-filter is unset. With build-filter on, this action's
+    // comment carries the relevant/irrelevant split, which dependabot's own description
+    // never has, so it stays worth posting even when the raw compare URLs are redundant.
+    if (!buildFilter && prDetails.authorLogin === "dependabot[bot]") {
         const allCompareUrls = allDiffsByLockfile.flatMap(({ diffs }) =>
             diffs.map((d) => `https://github.com/${d.owner}/${d.repo}/compare/${d.beforeRev}..${d.rev}`),
         );
