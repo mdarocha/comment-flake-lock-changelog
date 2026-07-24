@@ -29,6 +29,10 @@ let existingCommentsList: Array<{ id: number; body: string }>;
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let listPRsMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let listCommitsMock: Mock<any>;
+// Pages the fake `client.paginate.iterator` yields when walking listCommits(sha: head).
+let listCommitsPages: Array<Array<{ sha: string; commit: { message: string }; html_url: string }>>;
 
 beforeEach(async () => {
     const testToken = `test_token_${Math.random()}`;
@@ -36,6 +40,8 @@ beforeEach(async () => {
     createCommentMock = mock(async (_params: unknown) => {});
     updateCommentMock = mock(async (_params: unknown) => {});
     existingCommentsList = [];
+    listCommitsPages = [];
+    listCommitsMock = mock(async () => ({ data: [] }));
 
     const mockOctokit = {
         graphql: mock(async (query: string, variables: Record<string, unknown>) => {
@@ -114,18 +120,70 @@ beforeEach(async () => {
                             },
                         } satisfies GetPullRequestChangedFilesResponse;
                     }
+                    if (
+                        variables["owner"] === "test_owner" &&
+                        variables["repo"] === "test_repo" &&
+                        variables["prNumber"] === 20
+                    ) {
+                        // Simulates a PR with more than one page of changed files: page 1 has
+                        // no `after` cursor and reports hasNextPage; page 2 is fetched with
+                        // the cursor from page 1 and is the last page.
+                        if (variables["after"] == null) {
+                            return {
+                                repository: {
+                                    pullRequest: {
+                                        files: {
+                                            totalCount: 3,
+                                            pageInfo: {
+                                                endCursor: "page1-end",
+                                                hasNextPage: true,
+                                            },
+                                            nodes: [{ path: "a.txt" }, { path: "b.txt" }],
+                                        },
+                                    },
+                                },
+                            } satisfies GetPullRequestChangedFilesResponse;
+                        }
+                        if (variables["after"] === "page1-end") {
+                            return {
+                                repository: {
+                                    pullRequest: {
+                                        files: {
+                                            totalCount: 3,
+                                            pageInfo: {
+                                                endCursor: "page2-end",
+                                                hasNextPage: false,
+                                            },
+                                            nodes: [{ path: "c.txt" }],
+                                        },
+                                    },
+                                },
+                            } satisfies GetPullRequestChangedFilesResponse;
+                        }
+                        throw new Error("Invalid arguments");
+                    }
                     throw new Error("Invalid arguments");
                 default:
                     throw new Error("Invalid query");
             }
         }),
         paginate: {
-            // Yields existingCommentsList, which each test may populate before calling upsertComment.
-            iterator: mock((_fn: unknown, _params: unknown) =>
-                (async function* () {
+            // Routes to whichever fake page set the test populated, based on which rest
+            // method was passed in: existingCommentsList for issues.listComments (used by
+            // upsertComment), listCommitsPages for repos.listCommits (used by compareCommits'
+            // truncated-range fallback).
+            iterator: mock((fn: unknown, _params: unknown) => {
+                if (fn === listCommitsMock) {
+                    return (async function* () {
+                        for (const page of listCommitsPages) {
+                            yield { data: page };
+                        }
+                    })();
+                }
+                return (async function* () {
                     yield { data: existingCommentsList };
-                })(),
-            ),
+                })();
+            }),
         },
         rest: {
             issues: {
@@ -170,9 +228,31 @@ beforeEach(async () => {
                         if (owner === "test_owner" && repo === "test_repo" && basehead === "no_base...no_head") {
                             throw new Error("No common ancestor");
                         }
+                        if (owner === "test_owner" && repo === "test_repo" && basehead === "base000...head999") {
+                            // Simulates GitHub's compare API commit cap: total_commits reports
+                            // the true range size, but the commits array itself is truncated.
+                            return {
+                                data: {
+                                    total_commits: 5,
+                                    commits: [
+                                        {
+                                            sha: "e1",
+                                            commit: { message: "commit e1" },
+                                            html_url: "https://github.com/test_owner/test_repo/commit/e1",
+                                        },
+                                        {
+                                            sha: "e2",
+                                            commit: { message: "commit e2" },
+                                            html_url: "https://github.com/test_owner/test_repo/commit/e2",
+                                        },
+                                    ],
+                                },
+                            };
+                        }
                         throw new Error("Invalid arguments");
                     },
                 )),
+                listCommits: listCommitsMock,
                 listPullRequestsAssociatedWithCommit: (listPRsMock = mock(
                     async ({ owner, repo, commit_sha }: { owner: string; repo: string; commit_sha: string }) => {
                         if (owner === "test_owner" && repo === "test_repo" && commit_sha === "aaa111") {
@@ -234,6 +314,14 @@ describe("getPullRequestChangedFiles", () => {
             "Not all files were loaded due to a large PR diff, some files may be missing from the changelog.",
         );
         expect(files).toEqual(["text.txt", "text2.txt"]);
+    });
+
+    test("walks every page of a multi-page file list instead of stopping at the first", async () => {
+        // Regression test for the changed-files list only ever reading GraphQL's first
+        // page (100 files) despite pageInfo.hasNextPage being available to paginate on.
+        const files = await getPullRequestChangedFiles(20);
+        expect(files).toEqual(["a.txt", "b.txt", "c.txt"]);
+        expect(logMock).not.toHaveBeenCalled();
     });
 });
 
@@ -359,6 +447,54 @@ describe("compareCommits", () => {
         const commits = await compareCommits("test_owner", "test_repo", "no_base", "no_head");
         expect(commits).toEqual([]);
         expect(logMock).toHaveBeenCalled();
+    });
+
+    test("falls back to paginated listCommits when the compare API truncates the range", async () => {
+        // total_commits (5) exceeds the compare API's truncated commits array (2), so the
+        // full range should be recovered by walking listCommits(sha: head) back to base.
+        // Regression test for
+        // https://github.com/mdarocha/comment-flake-lock-changelog/issues/316
+        listCommitsPages = [
+            [
+                {
+                    sha: "e5",
+                    commit: { message: "commit e5" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/e5",
+                },
+                {
+                    sha: "e4",
+                    commit: { message: "commit e4" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/e4",
+                },
+                {
+                    sha: "e3",
+                    commit: { message: "commit e3" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/e3",
+                },
+            ],
+            [
+                {
+                    sha: "e2",
+                    commit: { message: "commit e2" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/e2",
+                },
+                {
+                    sha: "e1",
+                    commit: { message: "commit e1" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/e1",
+                },
+                {
+                    sha: "base000",
+                    commit: { message: "base commit" },
+                    html_url: "https://github.com/test_owner/test_repo/commit/base000",
+                },
+            ],
+        ];
+
+        const commits = await compareCommits("test_owner", "test_repo", "base000", "head999");
+
+        expect(commits.map((c) => c.sha)).toEqual(["e1", "e2", "e3", "e4", "e5"]);
+        expect(logMock).toHaveBeenCalledWith(expect.stringContaining("compare API returned 2 of 5 commits"));
     });
 });
 

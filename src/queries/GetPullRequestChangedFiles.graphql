@@ -1,7 +1,7 @@
-query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!) {
+query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!, $after: String) {
     repository(owner: $owner, name: $repo) {
         pullRequest(number: $prNumber) {
-            files(first: 100) {
+            files(first: 100, after: $after) {
                 totalCount
                 pageInfo {
                     endCursor

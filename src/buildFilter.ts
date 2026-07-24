@@ -99,8 +99,16 @@ export function filterCommitsByBuildRelevance(
             throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
         }
 
-        // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha
-        const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
+        // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha. The final element
+        // is always diff.rev (the actual head of the range) rather than commits[N-1].sha:
+        // compareCommits' underlying API caps how many commits it returns per call, so if
+        // that cap is ever hit the last entry in `commits` would not be the true head and
+        // the bisect's upper endpoint would silently land short of the real range.
+        const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
+        const allShas =
+            lastCommitSha === diff.rev
+                ? [diff.beforeRev, ...commits.map((c) => c.sha)]
+                : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
 
         const cmdParts = ["sh", "-c", buildCommand];
 
