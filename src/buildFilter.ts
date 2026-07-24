@@ -151,13 +151,10 @@ function bisect(
 /**
  * Filter commits by whether they affect the build output.
  *
- * Each commit the bisect actually checks out is fetched individually, right before
- * it's needed, as its own isolated, blobless, depth-1 commit — not a full clone of
- * the repo's history, and not the whole commit range up front (bisection only ever
- * touches O(log N) of the range's commits, so fetching all of it defeats the point
- * and risks the fetch itself failing on a wide range). For each build, the
- * user-provided build command is run as-is in process.cwd() (the
- * Actions workspace) with CFLC_INPUT_NAME set to the flake input's name,
+ * The upstream repo is cloned (blobless: tree metadata only, blobs fetched on demand
+ * during checkout) and checked out at various commits. For each build, the
+ * user-provided build command is run as-is in process.cwd() (the Actions workspace)
+ * with CFLC_INPUT_NAME set to the flake input's name,
  * CFLC_INPUT_PATH set to the upstream checkout, and CFLC_INPUT_REV set to the SHA.
  * CFLC_INPUT_NAME lets a single build command handle whichever input is currently
  * being bisected (e.g. `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`),
@@ -206,32 +203,23 @@ export function filterCommitsByBuildRelevance(
                 ? [diff.beforeRev, ...commits.map((c) => c.sha)]
                 : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
 
-        const initResult = spawnCmd(["git", "init", repoPath]);
-        if (initResult.exitCode !== 0) {
-            throw new Error(`Failed to init repo at ${repoPath}: ${initResult.stderr}`);
-        }
-        const remoteResult = spawnCmd(["git", "remote", "add", "origin", repoUrl], { cwd: repoPath });
-        if (remoteResult.exitCode !== 0) {
-            throw new Error(`Failed to add remote ${repoUrl}: ${remoteResult.stderr}`);
+        // Blobless clone: fetch tree metadata only; blobs are fetched on demand during
+        // checkout. Deliberately a full clone, not a partial/shallow fetch of just the
+        // commits in this range: a git-init-plus-per-commit-fetch repo (no branches, no
+        // full ref graph) has twice now made Nix's git+file fetcher fail against it in
+        // real testing, so this sticks with the one approach that's actually held up —
+        // same lesson as build-filter-skip-checkout, reverted for a related reason (see
+        // the README's 'Disk space' section).
+        core.info(`build-filter: cloning ${repoUrl}`);
+        const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
+        if (cloneResult.exitCode !== 0) {
+            throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
         }
 
         const cmdParts = ["sh", "-c", buildCommand];
 
         const buildFn = (sha: string): string => {
             core.info(`build-filter: building ${sha}`);
-            // Bisection only ever touches O(log N) of the range's commits, so fetch each
-            // one right before it's needed instead of the whole range up front — fetching
-            // every commit in a wide range (a multi-day nixpkgs bump can be thousands) in
-            // one request defeats the point of bisecting and risks the fetch itself timing
-            // out or hitting a server-side limit on how many commits can be requested at
-            // once. Blobless, depth-1: tree metadata only, no ancestor history; blobs are
-            // fetched on demand during checkout via the promisor remote.
-            const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", sha], {
-                cwd: repoPath,
-            });
-            if (fetchResult.exitCode !== 0) {
-                throw new Error(`Failed to fetch ${sha} from ${repoUrl}: ${fetchResult.stderr}`);
-            }
             const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
             if (checkoutResult.exitCode !== 0) {
                 throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);

@@ -120,12 +120,8 @@ that input, unfiltered, rather than guessing.
 
 ### Disk space
 
-The action fetches each commit individually, right before the bisection checks it out, instead of
-cloning the repository's full history. Bisection only ever touches a logarithmic slice of the range
-(a handful of commits, not the whole thing), so this stays cheap even for a range spanning thousands
-of commits. Even so, every flake input
-still has to become its own immutable, content-addressed store path before Nix can evaluate against
-it, and since each commit in the bisection genuinely has different content, that store path is
+Every flake input has to become an immutable, content-addressed store path before Nix can evaluate
+against it, and since each commit in the bisection genuinely has different content, the store path is
 different every time too. For a large repo like nixpkgs, bisecting even a few dozen commits can pile
 up tens of GB of store paths this way, and nothing reclaims that until whatever runs `nix store gc`
 next, which can be too late if a later step in the same job needs the disk.

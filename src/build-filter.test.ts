@@ -24,13 +24,7 @@ beforeEach(async () => {
             if (cmd === "git" && args[0] === "--version") {
                 return { status: 0, stdout: "git version 2.43.0", stderr: "" };
             }
-            if (cmd === "git" && args[0] === "init") {
-                return { status: 0, stdout: "", stderr: "" };
-            }
-            if (cmd === "git" && args[0] === "remote") {
-                return { status: 0, stdout: "", stderr: "" };
-            }
-            if (cmd === "git" && args[0] === "fetch") {
+            if (cmd === "git" && args[0] === "clone") {
                 return { status: 0, stdout: "", stderr: "" };
             }
             if (cmd === "git" && args[0] === "checkout") {
@@ -172,42 +166,6 @@ describe("filterCommitsByBuildRelevance", () => {
 
         const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
         expect(buildShas).toEqual(["before", "c1"]);
-    });
-
-    test("fetches each commit individually right before it's built, never the whole range in one request", async () => {
-        // Regression test: an earlier version fetched every commit in allShas up front in
-        // a single `git fetch ... <sha1> <sha2> ... <shaN>` call. That defeats bisection's
-        // O(log N) benefit (a wide range can be thousands of commits) and, live against a
-        // real remote, made the fetch itself fail — found on a 1847-commit nixpkgs bump.
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-
-        outputsBySha = { before: "out-a", c1: "out-b", c2: "out-b" };
-
-        filterCommitsByBuildRelevance(
-            [
-                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
-                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
-            ],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2", name: "flake-utils" },
-            'echo "$CFLC_INPUT_REV"',
-        );
-
-        const fetchCalls = spawnCalls.filter((c) => c.cmd === "git" && c.args[0] === "fetch");
-        expect(fetchCalls.length).toBeGreaterThan(0);
-        for (const call of fetchCalls) {
-            // args: ["fetch", "--filter=blob:none", "--depth=1", "origin", sha] — exactly
-            // one positional sha, never a batch.
-            expect(call.args.slice(4)).toHaveLength(1);
-        }
-        // Each fetch immediately precedes the checkout of the same commit.
-        const fetchAndCheckoutShas = spawnCalls
-            .filter((c) => c.cmd === "git" && (c.args[0] === "fetch" || c.args[0] === "checkout"))
-            .map((c) => (c.args[0] === "fetch" ? `fetch:${c.args[4]}` : `checkout:${c.args[1]}`));
-        for (let i = 0; i < fetchAndCheckoutShas.length; i += 2) {
-            const sha = fetchAndCheckoutShas[i].split(":")[1];
-            expect(fetchAndCheckoutShas[i]).toBe(`fetch:${sha}`);
-            expect(fetchAndCheckoutShas[i + 1]).toBe(`checkout:${sha}`);
-        }
     });
 });
 
