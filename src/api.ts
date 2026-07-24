@@ -321,16 +321,35 @@ interface CacheFile {
     prForCommit: Record<string, { id: number; url: string } | null>;
 }
 
-function getCacheKeyAndPath(owner: string, repo: string): { key: string; filePath: string } {
-    const key = `comment-flake-lock-changelog-v1-${owner}-${repo}`;
-    const filePath = path.join(os.tmpdir(), `${key}.json`);
-    return { key, filePath };
+// GitHub Actions caches are immutable per exact key within a scope (branch):
+// once a key exists, every later attempt to save to that same key fails. A bare,
+// unversioned prefix as the literal key (the previous approach here) meant the
+// very first successful save on a branch permanently "froze" the cache — every
+// later run on that branch restored that same first snapshot but silently failed
+// to persist anything newer (the failure only ever surfaced via a hidden
+// core.debug call), and every *different* branch (the common case: a fresh
+// per-bump PR from update-flake-lock, this action's own documented example) never
+// matched the exact key at all, so it never benefited from caching in the first
+// place. Save under a key suffixed with the run/attempt (always unique, so the
+// save always succeeds) and restore via a prefix match on the stable prefix (so a
+// later run still finds the most recent save regardless of its exact suffix) —
+// the same primary-key + restore-prefix split cache-nix-action itself uses.
+function getCachePrefix(owner: string, repo: string): string {
+    return `comment-flake-lock-changelog-v1-${owner}-${repo}`;
+}
+
+function getCacheFilePath(owner: string, repo: string): string {
+    return path.join(os.tmpdir(), `${getCachePrefix(owner, repo)}.json`);
 }
 
 export async function restoreCacheForRepo(owner: string, repo: string): Promise<void> {
-    const { key, filePath } = getCacheKeyAndPath(owner, repo);
+    const prefix = getCachePrefix(owner, repo);
+    const filePath = getCacheFilePath(owner, repo);
     try {
-        const hit = await cache.restoreCache([filePath], key);
+        // primaryKey never exact-matches (actual saves are always suffixed), so this
+        // always falls through to the restoreKeys prefix match against the most
+        // recent save.
+        const hit = await cache.restoreCache([filePath], prefix, [prefix]);
         if (!hit) {
             return;
         }
@@ -348,7 +367,8 @@ export async function restoreCacheForRepo(owner: string, repo: string): Promise<
 }
 
 export async function saveCacheForRepo(owner: string, repo: string): Promise<void> {
-    const { key, filePath } = getCacheKeyAndPath(owner, repo);
+    const prefix = getCachePrefix(owner, repo);
+    const filePath = getCacheFilePath(owner, repo);
     try {
         const compareCommitsEntries: CacheFile["compareCommits"] = {};
         for (const [k, commits] of compareCommitsCache.entries()) {
@@ -363,7 +383,9 @@ export async function saveCacheForRepo(owner: string, repo: string): Promise<voi
             prForCommit: prForCommitEntries,
         };
         fs.writeFileSync(filePath, JSON.stringify(cacheFile), "utf8");
-        await cache.saveCache([filePath], key);
+        const runId = process.env["GITHUB_RUN_ID"] ?? Date.now().toString();
+        const runAttempt = process.env["GITHUB_RUN_ATTEMPT"] ?? "1";
+        await cache.saveCache([filePath], `${prefix}-${runId}-${runAttempt}`);
     } catch (err) {
         core.debug(`Cache save unavailable or failed: ${String(err)}`);
     }
