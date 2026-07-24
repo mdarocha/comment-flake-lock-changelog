@@ -66786,14 +66786,19 @@ async function run() {
   }
   const TAG_OVERHEAD = `
 ${COMMENT_TAG_PATTERN}`.length;
+  function shortSha(sha) {
+    return sha.slice(0, 7);
+  }
   function diffHeaderBlock(diff) {
     return [
       `### [${diff.owner}/${diff.repo}](https://github.com/${diff.owner}/${diff.repo})`,
       "",
-      "<details><summary>Changelog</summary>",
-      "",
-      `[\`${diff.beforeRev}\` -> \`${diff.rev}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`
+      `[\`${shortSha(diff.beforeRev)}\` -> \`${shortSha(diff.rev)}\`](https://github.com/${diff.owner}/${diff.repo}/compare/${diff.beforeRev}..${diff.rev})`
     ].join(`
+`);
+  }
+  function changelogAccordionOpenBlock() {
+    return ["", "<details><summary>Changelog</summary>", ""].join(`
 `);
   }
   function noCommonAncestorBlock() {
@@ -66823,8 +66828,7 @@ ${COMMENT_TAG_PATTERN}`.length;
   function buildOmittedNote(owner, repo, beforeRev, rev, count) {
     return `
 
-> [!NOTE]
-` + `> ${count} more commit(s) were not shown (comment size limit). ` + `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})
+> ` + `${count} more commit(s) were not shown (comment size limit). ` + `[View full comparison](https://github.com/${owner}/${repo}/compare/${beforeRev}..${rev})
 `;
   }
   function commitListItem(commit) {
@@ -66897,6 +66901,7 @@ ${COMMENT_TAG_PATTERN}`.length;
       reserved += `## ${lockfile}`.length + 1;
     }
     reserved += diffHeaderBlock(diff).length + 1;
+    reserved += changelogAccordionOpenBlock().length + 1;
     reserved += closingBlock().length + 1;
     if (relevant.length === 0 && irrelevant.length === 0) {
       reserved += noCommonAncestorBlock().length + 1;
@@ -66924,11 +66929,16 @@ ${COMMENT_TAG_PATTERN}`.length;
     }
     result.push(diffHeaderBlock(diff));
     if (relevant.length === 0 && irrelevant.length === 0) {
+      result.push(changelogAccordionOpenBlock());
       result.push(closingBlock());
       result.push(noCommonAncestorBlock());
       await saveCacheForRepo(diff.owner, diff.repo);
       continue;
     }
+    if (relevant.length === 0) {
+      result.push(allIrrelevantNoteBlock());
+    }
+    result.push(changelogAccordionOpenBlock());
     let omittedRelevant = 0;
     if (relevant.length > 0) {
       result.push(firstLine);
@@ -66965,9 +66975,7 @@ ${COMMENT_TAG_PATTERN}`.length;
     }
     result.push(closingBlock());
     await saveCacheForRepo(diff.owner, diff.repo);
-    if (relevant.length === 0) {
-      result.push(allIrrelevantNoteBlock());
-    } else if (omittedRelevant > 0) {
+    if (omittedRelevant > 0) {
       result.push(buildOmittedNote(diff.owner, diff.repo, diff.beforeRev, diff.rev, omittedRelevant));
     }
   }
