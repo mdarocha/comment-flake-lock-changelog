@@ -25,7 +25,6 @@ let getFileContentAtCommitMock: Mock<(commit: string, path: string) => Promise<s
 let warningMock: Mock<(message: string) => void>;
 let buildFilterInput = "";
 let buildFilterGcInput = "";
-let buildFilterSkipCheckoutInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,7 +43,6 @@ beforeEach(async () => {
     warningMock = mock(() => {});
     buildFilterInput = "";
     buildFilterGcInput = "";
-    buildFilterSkipCheckoutInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
 
@@ -54,7 +52,6 @@ beforeEach(async () => {
                 if (input === "pull-request-number") return "42";
                 if (input === "build-filter") return buildFilterInput;
                 if (input === "build-filter-gc") return buildFilterGcInput;
-                if (input === "build-filter-skip-checkout") return buildFilterSkipCheckoutInput;
                 return "";
             }),
             info: mock(() => {}),
@@ -234,37 +231,13 @@ describe("run", () => {
         expect(irrelevantCommitIndex).toBeGreaterThan(summaryIndex);
     });
 
-    test("passes gcBetweenBuilds/skipCheckout through to build-filter only when their inputs are set", async () => {
+    test("passes gcBetweenBuilds through to build-filter only when build-filter-gc is set", async () => {
         getPullRequestDetailsMock.mockImplementation(async () => ({
             authorLogin: "someone",
             body: "",
         }));
         buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
-        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
-        compareCommitsMock.mockImplementation(async () => commits);
-        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
-
-        const { run } = await import("~/main");
-        await run();
-
-        const [, , , passedOptions] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
-            typeof commits,
-            unknown,
-            string,
-            { gcBetweenBuilds?: boolean; skipCheckout?: boolean },
-        ];
-        expect(passedOptions).toEqual({ gcBetweenBuilds: false, skipCheckout: false });
-    });
-
-    test("passes gcBetweenBuilds and skipCheckout as true when build-filter-gc/build-filter-skip-checkout are set", async () => {
-        getPullRequestDetailsMock.mockImplementation(async () => ({
-            authorLogin: "someone",
-            body: "",
-        }));
-        buildFilterInput =
-            'nix eval --override-input "$CFLC_INPUT_NAME" "git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV" --raw ".#default.drvPath"';
         buildFilterGcInput = "true";
-        buildFilterSkipCheckoutInput = "true";
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
         filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
@@ -276,9 +249,9 @@ describe("run", () => {
             typeof commits,
             unknown,
             string,
-            { gcBetweenBuilds?: boolean; skipCheckout?: boolean },
+            { gcBetweenBuilds?: boolean },
         ];
-        expect(passedOptions).toEqual({ gcBetweenBuilds: true, skipCheckout: true });
+        expect(passedOptions).toEqual({ gcBetweenBuilds: true });
     });
 
     test("falls back to showing every commit unfiltered when build-filter throws", async () => {
