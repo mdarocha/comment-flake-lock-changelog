@@ -23,6 +23,9 @@ let upsertCommentMock: Mock<(prNumber: number, body: string) => Promise<void>>;
 let getPullRequestDetailsMock: Mock<() => Promise<PullRequestDetails>>;
 let getFileContentAtCommitMock: Mock<(commit: string, path: string) => Promise<string>>;
 let warningMock: Mock<(message: string) => void>;
+let infoMock: Mock<(message: string) => void>;
+let debugMock: Mock<(message: string) => void>;
+let isDebugEnabled = false;
 let buildFilterInput = "";
 let buildFilterGcInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -45,6 +48,9 @@ beforeEach(async () => {
     );
     compareCommitsMock = mock(async () => []);
     warningMock = mock(() => {});
+    infoMock = mock(() => {});
+    debugMock = mock(() => {});
+    isDebugEnabled = false;
     buildFilterInput = "";
     buildFilterGcInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,8 +66,10 @@ beforeEach(async () => {
                 if (input === "build-filter-gc") return buildFilterGcInput;
                 return "";
             }),
-            info: mock(() => {}),
+            info: infoMock,
             warning: warningMock,
+            isDebug: mock(() => isDebugEnabled),
+            debug: debugMock,
         })),
         await mockModule("~/api", () => ({
             getPullRequestChangedFiles: mock(async () => ["flake.lock"]),
@@ -215,6 +223,66 @@ describe("run", () => {
         expect(body).toContain("commit 0 in flake-utils");
         expect((body.match(/more commit\(s\) were not shown/g) ?? []).length).toBeGreaterThanOrEqual(1);
         expect(body.length).toBeLessThan(65536);
+    });
+
+    test("never logs a per-commit PR-lookup line via core.info, even over a large irrelevant list", async () => {
+        // Regression test: a wide flake.lock bump can classify thousands of commits as
+        // irrelevant, and an unconditional core.info() per commit in the render loop is
+        // enough synchronous stdout writes to crash the whole action with EPIPE — the
+        // same failure mode buildFilter.ts's per-commit classification logging was fixed
+        // for previously. This loop (main.ts's PR-lookup pass) had the same bug.
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const relevantCommit = {
+            sha: "sha0",
+            message: "relevant commit",
+            url: "https://github.com/NixOS/nixpkgs/commit/sha0",
+        };
+        const irrelevantCommits = Array.from({ length: 250 }, (_, i) => ({
+            sha: `irr${i}`,
+            message: `irrelevant commit ${i}`,
+            url: `https://github.com/NixOS/nixpkgs/commit/irr${i}`,
+        }));
+        compareCommitsMock.mockImplementation(async () => [relevantCommit, ...irrelevantCommits]);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({
+            relevant: [relevantCommit],
+            irrelevant: irrelevantCommits,
+        }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(infoMock.mock.calls.some((c) => String(c[0]).includes("Checking for PRs"))).toBe(false);
+    });
+
+    test("logs the per-commit PR-lookup line via core.debug when step debugging is on", async () => {
+        isDebugEnabled = true;
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({
+            relevant: [commits[0]],
+            irrelevant: [commits[1]],
+        }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(
+            debugMock.mock.calls.some((c) =>
+                String(c[0]).includes(`Checking for PRs associated with commit ${commits[1].sha}`),
+            ),
+        ).toBe(true);
     });
 
     test("splits commits into a relevant list and a collapsed irrelevant section when build-filter is set", async () => {

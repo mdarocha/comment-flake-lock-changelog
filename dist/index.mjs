@@ -67160,7 +67160,9 @@ ${COMMENT_TAG_PATTERN}`.length;
       result.push(firstLine);
       for (let i = 1;i < relevant.length; i++) {
         const commit = relevant[i];
-        info(`Checking for PRs associated with commit ${commit.sha}`);
+        if (isDebug()) {
+          debug(`Checking for PRs associated with commit ${commit.sha}`);
+        }
         const line = await buildCommitLine(diff, commit);
         if (line.length + 1 > discretionaryBudget) {
           omittedRelevant = relevant.length - i;
@@ -67175,7 +67177,9 @@ ${COMMENT_TAG_PATTERN}`.length;
       let omittedIrrelevant = 0;
       for (let i = 0;i < irrelevant.length; i++) {
         const commit = irrelevant[i];
-        info(`Checking for PRs associated with commit ${commit.sha}`);
+        if (isDebug()) {
+          debug(`Checking for PRs associated with commit ${commit.sha}`);
+        }
         const line = await buildCommitLine(diff, commit);
         if (line.length + 1 > discretionaryBudget) {
           omittedIrrelevant = irrelevant.length - i;

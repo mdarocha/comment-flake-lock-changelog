@@ -393,7 +393,9 @@ export async function run(): Promise<void> {
 
             for (let i = 1; i < relevant.length; i++) {
                 const commit = relevant[i];
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                if (core.isDebug()) {
+                    core.debug(`Checking for PRs associated with commit ${commit.sha}`);
+                }
                 const line = await buildCommitLine(diff, commit);
 
                 if (line.length + 1 > discretionaryBudget) {
@@ -414,7 +416,9 @@ export async function run(): Promise<void> {
             let omittedIrrelevant = 0;
             for (let i = 0; i < irrelevant.length; i++) {
                 const commit = irrelevant[i];
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                if (core.isDebug()) {
+                    core.debug(`Checking for PRs associated with commit ${commit.sha}`);
+                }
                 const line = await buildCommitLine(diff, commit);
 
                 if (line.length + 1 > discretionaryBudget) {
