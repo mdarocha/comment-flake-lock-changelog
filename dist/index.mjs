@@ -66662,15 +66662,17 @@ async function getPullRequestDetails(prNumber) {
     body: data.body ?? ""
   };
 }
-function getCacheKeyAndPath(owner, repo) {
-  const key = `comment-flake-lock-changelog-v1-${owner}-${repo}`;
-  const filePath = path11.join(os7.tmpdir(), `${key}.json`);
-  return { key, filePath };
+function getCachePrefix(owner, repo) {
+  return `comment-flake-lock-changelog-v1-${owner}-${repo}`;
+}
+function getCacheFilePath(owner, repo) {
+  return path11.join(os7.tmpdir(), `${getCachePrefix(owner, repo)}.json`);
 }
 async function restoreCacheForRepo(owner, repo) {
-  const { key, filePath } = getCacheKeyAndPath(owner, repo);
+  const prefix2 = getCachePrefix(owner, repo);
+  const filePath = getCacheFilePath(owner, repo);
   try {
-    const hit = await restoreCache([filePath], key);
+    const hit = await restoreCache([filePath], prefix2, [prefix2]);
     if (!hit) {
       return;
     }
@@ -66687,7 +66689,8 @@ async function restoreCacheForRepo(owner, repo) {
   }
 }
 async function saveCacheForRepo(owner, repo) {
-  const { key, filePath } = getCacheKeyAndPath(owner, repo);
+  const prefix2 = getCachePrefix(owner, repo);
+  const filePath = getCacheFilePath(owner, repo);
   try {
     const compareCommitsEntries = {};
     for (const [k, commits] of compareCommitsCache.entries()) {
@@ -66702,7 +66705,9 @@ async function saveCacheForRepo(owner, repo) {
       prForCommit: prForCommitEntries
     };
     fs7.writeFileSync(filePath, JSON.stringify(cacheFile), "utf8");
-    await saveCache2([filePath], key);
+    const runId = process.env["GITHUB_RUN_ID"] ?? Date.now().toString();
+    const runAttempt = process.env["GITHUB_RUN_ATTEMPT"] ?? "1";
+    await saveCache2([filePath], `${prefix2}-${runId}-${runAttempt}`);
   } catch (err) {
     debug(`Cache save unavailable or failed: ${String(err)}`);
   }

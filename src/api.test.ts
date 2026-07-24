@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Mock } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
     clearCaches,
     compareCommits,
@@ -8,6 +11,8 @@ import {
     getPullRequestDetails,
     getPullRequestForCommit,
     getPullRequestRefs,
+    restoreCacheForRepo,
+    saveCacheForRepo,
     upsertComment,
 } from "~/api";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
@@ -519,5 +524,92 @@ describe("getPullRequestForCommit", () => {
         await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
         await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
         expect(listPRsMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("restoreCacheForRepo / saveCacheForRepo", () => {
+    let restoreCacheMock: Mock<
+        (paths: string[], primaryKey: string, restoreKeys?: string[]) => Promise<string | undefined>
+    >;
+    let saveCacheMock: Mock<(paths: string[], key: string) => Promise<number>>;
+    let cacheModuleMock: Awaited<ReturnType<typeof mockModule>>;
+    const filePath = path.join(os.tmpdir(), "comment-flake-lock-changelog-v1-test_owner-test_repo.json");
+    const originalRunId = process.env["GITHUB_RUN_ID"];
+    const originalRunAttempt = process.env["GITHUB_RUN_ATTEMPT"];
+
+    beforeEach(async () => {
+        restoreCacheMock = mock(async () => undefined);
+        saveCacheMock = mock(async () => 0);
+        cacheModuleMock = await mockModule("@actions/cache", () => ({
+            restoreCache: restoreCacheMock,
+            saveCache: saveCacheMock,
+        }));
+        fs.rmSync(filePath, { force: true });
+    });
+
+    afterEach(() => {
+        cacheModuleMock.dispose();
+        fs.rmSync(filePath, { force: true });
+        if (originalRunId === undefined) {
+            delete process.env["GITHUB_RUN_ID"];
+        } else {
+            process.env["GITHUB_RUN_ID"] = originalRunId;
+        }
+        if (originalRunAttempt === undefined) {
+            delete process.env["GITHUB_RUN_ATTEMPT"];
+        } else {
+            process.env["GITHUB_RUN_ATTEMPT"] = originalRunAttempt;
+        }
+    });
+
+    test("restoreCacheForRepo restores via a prefix fallback, not just an exact key", async () => {
+        await restoreCacheForRepo("test_owner", "test_repo");
+
+        expect(restoreCacheMock).toHaveBeenCalledTimes(1);
+        const [, primaryKey, restoreKeys] = restoreCacheMock.mock.calls[0] as [string[], string, string[]];
+        // Real saves are always suffixed (see below), so an exact match on the bare
+        // prefix should never hit - restoreKeys is what actually finds a prior save.
+        expect(restoreKeys).toEqual([primaryKey]);
+    });
+
+    test("saveCacheForRepo never reuses the same key across two runs, so neither save collides with the other", async () => {
+        process.env["GITHUB_RUN_ID"] = "111";
+        process.env["GITHUB_RUN_ATTEMPT"] = "1";
+        await saveCacheForRepo("test_owner", "test_repo");
+        const [, firstKey] = saveCacheMock.mock.calls[0] as [string[], string];
+
+        process.env["GITHUB_RUN_ID"] = "222";
+        process.env["GITHUB_RUN_ATTEMPT"] = "1";
+        await saveCacheForRepo("test_owner", "test_repo");
+        const [, secondKey] = saveCacheMock.mock.calls[1] as [string[], string];
+
+        expect(saveCacheMock).toHaveBeenCalledTimes(2);
+        expect(firstKey).not.toBe(secondKey);
+        // Neither save key is the bare prefix either - that's the literal key the old,
+        // broken implementation used, and it's exactly what made every save after the
+        // first one on a branch fail silently (GitHub Actions caches are immutable per
+        // exact key).
+        expect(firstKey).not.toBe("comment-flake-lock-changelog-v1-test_owner-test_repo");
+        expect(secondKey).not.toBe("comment-flake-lock-changelog-v1-test_owner-test_repo");
+    });
+
+    test("a cache hit on restore populates compareCommits' cache, so a matching call skips the API", async () => {
+        fs.writeFileSync(
+            filePath,
+            JSON.stringify({
+                compareCommits: {
+                    "test_owner/test_repo@abc123...def456": [{ sha: "cached-sha", message: "cached", url: "u" }],
+                },
+                prForCommit: {},
+            }),
+            "utf8",
+        );
+        restoreCacheMock.mockImplementation(async () => "some-previous-run-key");
+
+        await restoreCacheForRepo("test_owner", "test_repo");
+        const commits = await compareCommits("test_owner", "test_repo", "abc123", "def456");
+
+        expect(commits).toEqual([{ sha: "cached-sha", message: "cached", url: "u" }]);
+        expect(compareCommitsMock).not.toHaveBeenCalled();
     });
 });
