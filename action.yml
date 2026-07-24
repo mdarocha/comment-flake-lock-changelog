@@ -19,6 +19,10 @@ inputs:
     description: "Run `nix store gc` after every build-filter build to reclaim disk space. Only enable this if nothing else in the same job depends on Nix store paths that aren't rooted yet at this point (e.g. run this action before restoring any build cache). See the README's 'Build filter' section for details."
     required: false
     default: "false"
+  build-filter-skip-checkout:
+    description: "Skip the internal `git checkout` before every build-filter build. Only enable this if your build-filter command fetches the commit itself, e.g. using `git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV` instead of `path:$CFLC_INPUT_PATH`. See the README's 'Build filter' section for details."
+    required: false
+    default: "false"
 runs:
   using: node24
   main: dist/index.mjs

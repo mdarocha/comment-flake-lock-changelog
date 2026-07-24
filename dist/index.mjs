@@ -66776,9 +66776,11 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
     const cmdParts = ["sh", "-c", buildCommand];
     const buildFn = (sha) => {
       info(`build-filter: building ${sha}`);
-      const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
-      if (checkoutResult.exitCode !== 0) {
-        throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
+      if (!options?.skipCheckout) {
+        const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
+        if (checkoutResult.exitCode !== 0) {
+          throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
+        }
       }
       const result = spawnCmd(cmdParts, {
         cwd: process.cwd(),
@@ -66974,6 +66976,7 @@ ${COMMENT_TAG_PATTERN}`.length;
   }
   const buildFilter = getInput("build-filter");
   const buildFilterGc = getInput("build-filter-gc") === "true";
+  const buildFilterSkipCheckout = getInput("build-filter-skip-checkout") === "true";
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -67013,7 +67016,8 @@ ${COMMENT_TAG_PATTERN}`.length;
         info(`Running build-filter for ${diff.owner}/${diff.repo}`);
         try {
           const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-            gcBetweenBuilds: buildFilterGc
+            gcBetweenBuilds: buildFilterGc,
+            skipCheckout: buildFilterSkipCheckout
           });
           relevant = filtered.relevant;
           irrelevant = filtered.irrelevant;

@@ -95,13 +95,14 @@ function bisect(
 /**
  * Filter commits by whether they affect the build output.
  *
- * The upstream repo is cloned and checked out at various commits. For each build,
- * the user-provided build command is run as-is in process.cwd() (the Actions workspace)
- * with CFLC_INPUT_NAME set to the flake input's name, CFLC_INPUT_PATH set to the
- * upstream checkout, and CFLC_INPUT_REV set to the SHA. CFLC_INPUT_NAME lets a single
- * build command handle whichever input is currently being bisected (e.g.
- * `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`), instead of hardcoding
- * one input name. The command's stdout is used as the build fingerprint.
+ * The upstream repo is cloned, and (unless `options.skipCheckout`) checked out at
+ * various commits. For each build, the user-provided build command is run as-is in
+ * process.cwd() (the Actions workspace) with CFLC_INPUT_NAME set to the flake input's
+ * name, CFLC_INPUT_PATH set to the upstream checkout, and CFLC_INPUT_REV set to the
+ * SHA. CFLC_INPUT_NAME lets a single build command handle whichever input is currently
+ * being bisected (e.g. `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`),
+ * instead of hardcoding one input name. The command's stdout is used as the build
+ * fingerprint.
  *
  * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
  * k = number of output change points, instead of O(N) for a linear scan.
@@ -109,16 +110,27 @@ function bisect(
  * Requires `git` in PATH; throws a descriptive error if missing.
  *
  * @param options.gcBetweenBuilds - Run `nix store gc` after every build to reclaim
- * the `path:` fetcher's per-commit store copy before moving on to the next one. Only
- * safe to enable if nothing else relies on Nix store paths that aren't rooted yet at
- * the point this runs (e.g. run it before restoring any build cache in the same job)
- * — see the README's 'Build filter' section.
+ * the per-commit store copy before moving on to the next one. Only safe to enable if
+ * nothing else relies on Nix store paths that aren't rooted yet at the point this runs
+ * (e.g. run it before restoring any build cache in the same job) — see the README's
+ * 'Build filter' section.
+ * @param options.skipCheckout - Skip the internal `git checkout <sha>` before each
+ * build. Only meaningful (and only safe) if `buildCommand` fetches the commit itself
+ * instead of relying on `CFLC_INPUT_PATH` already being checked out to it — e.g. using
+ * `git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV` rather than `path:$CFLC_INPUT_PATH`.
+ * Saves materializing the tree as loose files on disk just to have Nix's `path:`
+ * fetcher copy it into the store right after — `git+file://` reads the commit directly
+ * out of the repository's object database (fetching any missing blobs from the
+ * blobless clone's promisor remote on demand, same as checkout does) and imports that
+ * straight into the store, so this halves the per-build disk/IO work instead of just
+ * reclaiming it after the fact like `gcBetweenBuilds` does. See the README's 'Build
+ * filter' section.
  */
 export function filterCommitsByBuildRelevance(
     commits: Commit[],
     diff: Diff,
     buildCommand: string,
-    options?: { gcBetweenBuilds?: boolean },
+    options?: { gcBetweenBuilds?: boolean; skipCheckout?: boolean },
 ): { relevant: Commit[]; irrelevant: Commit[] } {
     if (!isGitAvailable()) {
         throw new Error("git not found in PATH \u2014 cannot run build-filter");
@@ -156,9 +168,11 @@ export function filterCommitsByBuildRelevance(
 
         const buildFn = (sha: string): string => {
             core.info(`build-filter: building ${sha}`);
-            const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
-            if (checkoutResult.exitCode !== 0) {
-                throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
+            if (!options?.skipCheckout) {
+                const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
+                if (checkoutResult.exitCode !== 0) {
+                    throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
+                }
             }
             const result = spawnCmd(cmdParts, {
                 cwd: process.cwd(),

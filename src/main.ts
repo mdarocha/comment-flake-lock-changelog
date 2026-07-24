@@ -225,6 +225,7 @@ export async function run(): Promise<void> {
 
     const buildFilter = core.getInput("build-filter");
     const buildFilterGc = core.getInput("build-filter-gc") === "true";
+    const buildFilterSkipCheckout = core.getInput("build-filter-skip-checkout") === "true";
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -291,6 +292,7 @@ export async function run(): Promise<void> {
                 try {
                     const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
                         gcBetweenBuilds: buildFilterGc,
+                        skipCheckout: buildFilterSkipCheckout,
                     });
                     relevant = filtered.relevant;
                     irrelevant = filtered.irrelevant;
