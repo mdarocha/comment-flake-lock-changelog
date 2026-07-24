@@ -1,6 +1,7 @@
 import * as core from "@actions/core";
 import * as fs from "fs";
 import { spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as os from "os";
 import * as path from "path";
 
@@ -41,6 +42,61 @@ function spawnCmd(
 
 function isGitAvailable(): boolean {
     return spawnCmd(["git", "--version"]).exitCode === 0;
+}
+
+const NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
+
+function collectNixStateFiles(dir: string, root: string, out: string[]): void {
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (NIX_STATE_IGNORED_DIRS.has(entry.name)) {
+            continue;
+        }
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            collectNixStateFiles(fullPath, root, out);
+        } else if (entry.isFile() && (entry.name.endsWith(".nix") || entry.name === "flake.lock")) {
+            out.push(path.relative(root, fullPath));
+        }
+    }
+}
+
+let cachedNixStateHash: string | undefined;
+
+/**
+ * Hash of every `*.nix` file and `flake.lock` under `cwd` — the complete set of
+ * inputs (besides the input being bisected itself) that can change what the
+ * build command evaluates. Used as part of the build-filter result cache key in
+ * main.ts: a cached bisection result is only reusable while none of these files
+ * have changed since it was computed. Memoized per process since these files
+ * don't change mid-run; call resetNixStateHashCache() in tests that need a fresh
+ * read.
+ */
+export function computeNixStateHash(cwd: string = process.cwd()): string {
+    if (cachedNixStateHash !== undefined) {
+        return cachedNixStateHash;
+    }
+    const files: string[] = [];
+    collectNixStateFiles(cwd, cwd, files);
+    files.sort();
+    const hash = crypto.createHash("sha256");
+    for (const relPath of files) {
+        hash.update(relPath);
+        hash.update("\0");
+        hash.update(fs.readFileSync(path.join(cwd, relPath)));
+        hash.update("\0");
+    }
+    cachedNixStateHash = hash.digest("hex");
+    return cachedNixStateHash;
+}
+
+export function resetNixStateHashCache(): void {
+    cachedNixStateHash = undefined;
 }
 
 /**

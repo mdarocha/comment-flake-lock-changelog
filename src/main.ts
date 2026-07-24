@@ -2,7 +2,9 @@ import * as core from "@actions/core";
 import {
     COMMENT_TAG_PATTERN,
     GITHUB_COMMENT_MAX_LENGTH,
+    buildFilterCacheKey,
     compareCommits,
+    getCachedBuildFilterResult,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
     getPullRequestDetails,
@@ -10,9 +12,10 @@ import {
     getPullRequestRefs,
     restoreCacheForRepo,
     saveCacheForRepo,
+    setCachedBuildFilterResult,
     upsertComment,
 } from "~/api";
-import { filterCommitsByBuildRelevance } from "~/buildFilter";
+import { computeNixStateHash, filterCommitsByBuildRelevance } from "~/buildFilter";
 
 interface LockfileItem {
     type: string;
@@ -287,15 +290,28 @@ export async function run(): Promise<void> {
             let irrelevant: Commit[] = [];
 
             if (buildFilter && commits.length > 0) {
-                core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
-                try {
-                    const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-                        gcBetweenBuilds: buildFilterGc,
-                    });
-                    relevant = filtered.relevant;
-                    irrelevant = filtered.irrelevant;
-                } catch (e) {
-                    core.warning(`build-filter failed: ${e}. Showing all commits.`);
+                // Bisecting is a clone plus a build per bisect step — expensive enough that
+                // it's worth skipping entirely when nothing that could change the outcome
+                // (this repo's *.nix/flake.lock state, the build command, or the commit
+                // range itself) has changed since a previous run computed it.
+                const cacheKey = buildFilterCacheKey(computeNixStateHash(), buildFilter, diff);
+                const cachedResult = getCachedBuildFilterResult(cacheKey);
+                if (cachedResult) {
+                    core.info(`build-filter: ${diff.owner}/${diff.repo} — cache hit, skipping bisection`);
+                    relevant = cachedResult.relevant;
+                    irrelevant = cachedResult.irrelevant;
+                } else {
+                    core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
+                    try {
+                        const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+                            gcBetweenBuilds: buildFilterGc,
+                        });
+                        relevant = filtered.relevant;
+                        irrelevant = filtered.irrelevant;
+                        setCachedBuildFilterResult(cacheKey, filtered);
+                    } catch (e) {
+                        core.warning(`build-filter failed: ${e}. Showing all commits.`);
+                    }
                 }
             }
 

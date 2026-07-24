@@ -159,6 +159,16 @@ path that was merely *restored* (from a build cache, say) isn't necessarily a GC
 action runs after that restore, `build-filter-gc` can delete the very cache you just restored. Run
 this action **before** restoring any build cache in the job if you turn it on.
 
+### Result caching
+
+Bisecting a range is expensive — a clone plus a build per bisect step — so the action persists each
+input's bisection result in a GitHub Actions cache, keyed on everything that can change its outcome:
+the exact commit range and input name being tested, the `build-filter` command itself, and a hash of
+every `*.nix` file and `flake.lock` in your repo. A later run reuses a cached result instead of
+re-bisecting whenever all of those are unchanged — e.g. re-running the action on the same PR after
+only a comment edit — and automatically re-bisects the moment any of them changes, without you
+needing to invalidate anything yourself. This is automatic and needs no configuration.
+
 ### Inputs that change together
 
 If a PR bumps more than one input, each input is tested independently, with every *other* input held

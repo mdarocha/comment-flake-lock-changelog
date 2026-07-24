@@ -66414,6 +66414,7 @@ function getOctokit(token, options, ...additionalPlugins) {
 }
 
 // src/api.ts
+import * as crypto3 from "node:crypto";
 import * as fs7 from "node:fs";
 import * as os7 from "node:os";
 import * as path11 from "node:path";
@@ -66514,6 +66515,17 @@ async function getFileContentAtCommit(commit, filePath) {
 }
 var compareCommitsCache = new Map;
 var prForCommitCache = new Map;
+var buildFilterResultCache = new Map;
+function buildFilterCacheKey(nixStateHash, buildCommand, diff) {
+  const buildCommandHash = crypto3.createHash("sha256").update(buildCommand).digest("hex");
+  return `${nixStateHash}:${buildCommandHash}:${diff.name}@${diff.beforeRev}...${diff.rev}`;
+}
+function getCachedBuildFilterResult(cacheKey) {
+  return buildFilterResultCache.get(cacheKey);
+}
+function setCachedBuildFilterResult(cacheKey, result) {
+  buildFilterResultCache.set(cacheKey, result);
+}
 async function listCommitsBetween(client, owner, repo, base, head, totalCommits) {
   const collected = [];
   const hardLimit = totalCommits * 4 + 1000;
@@ -66556,7 +66568,7 @@ async function compareCommits(owner, repo, base, head) {
     const totalCommits = compareData.total_commits ?? rawCommits.length;
     info(`compareCommits: ${cacheKey} — compare API returned ${rawCommits.length} of ${totalCommits} commit(s)`);
     if (totalCommits > rawCommits.length) {
-      warning(`${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` + "commits; fetching the remainder via the commits API.");
+      info(`${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` + "commits; fetching the remainder via the commits API.");
       rawCommits = await listCommitsBetween(client, owner, repo, base, head, totalCommits);
       info(`compareCommits: ${cacheKey} — recovered ${rawCommits.length} commit(s) via pagination fallback`);
     }
@@ -66684,6 +66696,9 @@ async function restoreCacheForRepo(owner, repo) {
     for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
       prForCommitCache.set(k, v);
     }
+    for (const [k, v] of Object.entries(cacheFile.buildFilterResults ?? {})) {
+      buildFilterResultCache.set(k, v);
+    }
   } catch (err) {
     debug(`Cache restore unavailable or failed: ${String(err)}`);
   }
@@ -66700,9 +66715,14 @@ async function saveCacheForRepo(owner, repo) {
     for (const [k, v] of prForCommitCache.entries()) {
       prForCommitEntries[k] = v;
     }
+    const buildFilterResultEntries = {};
+    for (const [k, v] of buildFilterResultCache.entries()) {
+      buildFilterResultEntries[k] = v;
+    }
     const cacheFile = {
       compareCommits: compareCommitsEntries,
-      prForCommit: prForCommitEntries
+      prForCommit: prForCommitEntries,
+      buildFilterResults: buildFilterResultEntries
     };
     fs7.writeFileSync(filePath, JSON.stringify(cacheFile), "utf8");
     const runId = process.env["GITHUB_RUN_ID"] ?? Date.now().toString();
@@ -66716,6 +66736,7 @@ async function saveCacheForRepo(owner, repo) {
 // src/buildFilter.ts
 import * as fs8 from "fs";
 import { spawnSync } from "node:child_process";
+import * as crypto4 from "node:crypto";
 import * as os8 from "os";
 import * as path12 from "path";
 var LOG_FINGERPRINT_MAX_LENGTH = 200;
@@ -66739,6 +66760,44 @@ function spawnCmd(cmd, opts) {
 }
 function isGitAvailable() {
   return spawnCmd(["git", "--version"]).exitCode === 0;
+}
+var NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
+function collectNixStateFiles(dir, root, out) {
+  let entries;
+  try {
+    entries = fs8.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (NIX_STATE_IGNORED_DIRS.has(entry.name)) {
+      continue;
+    }
+    const fullPath = path12.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectNixStateFiles(fullPath, root, out);
+    } else if (entry.isFile() && (entry.name.endsWith(".nix") || entry.name === "flake.lock")) {
+      out.push(path12.relative(root, fullPath));
+    }
+  }
+}
+var cachedNixStateHash;
+function computeNixStateHash(cwd = process.cwd()) {
+  if (cachedNixStateHash !== undefined) {
+    return cachedNixStateHash;
+  }
+  const files = [];
+  collectNixStateFiles(cwd, cwd, files);
+  files.sort();
+  const hash = crypto4.createHash("sha256");
+  for (const relPath of files) {
+    hash.update(relPath);
+    hash.update("\x00");
+    hash.update(fs8.readFileSync(path12.join(cwd, relPath)));
+    hash.update("\x00");
+  }
+  cachedNixStateHash = hash.digest("hex");
+  return cachedNixStateHash;
 }
 function collectGarbage() {
   const result = spawnCmd(["nix", "store", "gc"]);
@@ -67015,15 +67074,24 @@ ${COMMENT_TAG_PATTERN}`.length;
       let relevant = commits;
       let irrelevant = [];
       if (buildFilter && commits.length > 0) {
-        info(`Running build-filter for ${diff.owner}/${diff.repo}`);
-        try {
-          const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-            gcBetweenBuilds: buildFilterGc
-          });
-          relevant = filtered.relevant;
-          irrelevant = filtered.irrelevant;
-        } catch (e) {
-          warning(`build-filter failed: ${e}. Showing all commits.`);
+        const cacheKey = buildFilterCacheKey(computeNixStateHash(), buildFilter, diff);
+        const cachedResult = getCachedBuildFilterResult(cacheKey);
+        if (cachedResult) {
+          info(`build-filter: ${diff.owner}/${diff.repo} — cache hit, skipping bisection`);
+          relevant = cachedResult.relevant;
+          irrelevant = cachedResult.irrelevant;
+        } else {
+          info(`Running build-filter for ${diff.owner}/${diff.repo}`);
+          try {
+            const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+              gcBetweenBuilds: buildFilterGc
+            });
+            relevant = filtered.relevant;
+            irrelevant = filtered.irrelevant;
+            setCachedBuildFilterResult(cacheKey, filtered);
+          } catch (e) {
+            warning(`build-filter failed: ${e}. Showing all commits.`);
+          }
         }
       }
       const firstLine = relevant.length > 0 ? await buildCommitLine(diff, relevant[0]) : null;

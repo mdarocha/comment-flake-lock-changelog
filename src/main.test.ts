@@ -29,6 +29,10 @@ let buildFilterGcInput = "";
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let filterCommitsByBuildRelevanceMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let getCachedBuildFilterResultMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let setCachedBuildFilterResultMock: Mock<any>;
 
 beforeEach(async () => {
     upsertCommentMock = mock(async () => {});
@@ -45,6 +49,8 @@ beforeEach(async () => {
     buildFilterGcInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
+    getCachedBuildFilterResultMock = mock(() => undefined);
+    setCachedBuildFilterResultMock = mock(() => {});
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
@@ -67,9 +73,16 @@ beforeEach(async () => {
             upsertComment: upsertCommentMock,
             restoreCacheForRepo: mock(async () => {}),
             saveCacheForRepo: mock(async () => {}),
+            buildFilterCacheKey: mock(
+                (nixStateHash: string, buildCommand: string, diff: { beforeRev: string; rev: string; name: string }) =>
+                    `${nixStateHash}:${buildCommand}:${diff.name}@${diff.beforeRev}...${diff.rev}`,
+            ),
+            getCachedBuildFilterResult: getCachedBuildFilterResultMock,
+            setCachedBuildFilterResult: setCachedBuildFilterResultMock,
         })),
         await mockModule("~/buildFilter", () => ({
             filterCommitsByBuildRelevance: filterCommitsByBuildRelevanceMock,
+            computeNixStateHash: mock(() => "fake-nix-state-hash"),
         })),
     ];
 });
@@ -229,6 +242,52 @@ describe("run", () => {
         const summaryIndex = body.indexOf("that did not affect the build output");
         const irrelevantCommitIndex = body.indexOf("irrelevant commit");
         expect(irrelevantCommitIndex).toBeGreaterThan(summaryIndex);
+    });
+
+    test("skips filterCommitsByBuildRelevance entirely on a build-filter result cache hit", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        const cached = { relevant: [commits[0]], irrelevant: [commits[1]] };
+        getCachedBuildFilterResultMock.mockImplementation(() => cached);
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).not.toHaveBeenCalled();
+        expect(setCachedBuildFilterResultMock).not.toHaveBeenCalled();
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("relevant commit");
+        expect(body).toContain("1 commit that did not affect the build output");
+    });
+
+    test("stores the build-filter result in the cache on a cache miss", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        const filtered = { relevant: commits, irrelevant: [] };
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => filtered);
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        expect(setCachedBuildFilterResultMock).toHaveBeenCalledTimes(1);
+        const [cacheKey, storedResult] = setCachedBuildFilterResultMock.mock.calls[0] as [string, typeof filtered];
+        expect(typeof cacheKey).toBe("string");
+        expect(storedResult).toEqual(filtered);
     });
 
     test("passes gcBetweenBuilds through to build-filter only when build-filter-gc is set", async () => {

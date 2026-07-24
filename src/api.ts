@@ -2,6 +2,7 @@ import * as cache from "@actions/cache";
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import type { GetResponseDataTypeFromEndpointMethod } from "@octokit/types";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -86,9 +87,43 @@ export async function getFileContentAtCommit(commit: string, filePath: string): 
 const compareCommitsCache = new Map<string, Array<{ sha: string; message: string; url: string }>>();
 const prForCommitCache = new Map<string, { id: number; url: string } | null>();
 
+type BuildFilterResult = {
+    relevant: Array<{ sha: string; message: string; url: string }>;
+    irrelevant: Array<{ sha: string; message: string; url: string }>;
+};
+const buildFilterResultCache = new Map<string, BuildFilterResult>();
+
 export function clearCaches(): void {
     compareCommitsCache.clear();
     prForCommitCache.clear();
+    buildFilterResultCache.clear();
+}
+
+/**
+ * Cache key for a build-filter bisection result. Bisecting a commit range is
+ * expensive (a clone plus a build per bisect step), so a result is only worth
+ * reusing while every input that can change its outcome is unchanged: the
+ * exact commit range being bisected, the input name being overridden, the
+ * build command itself, and `nixStateHash` (a hash of every `*.nix` file and
+ * `flake.lock` in the consuming repo — see computeNixStateHash in
+ * buildFilter.ts), since any of those can change what the build evaluates to
+ * without the commit range itself moving.
+ */
+export function buildFilterCacheKey(
+    nixStateHash: string,
+    buildCommand: string,
+    diff: { beforeRev: string; rev: string; name: string },
+): string {
+    const buildCommandHash = crypto.createHash("sha256").update(buildCommand).digest("hex");
+    return `${nixStateHash}:${buildCommandHash}:${diff.name}@${diff.beforeRev}...${diff.rev}`;
+}
+
+export function getCachedBuildFilterResult(cacheKey: string): BuildFilterResult | undefined {
+    return buildFilterResultCache.get(cacheKey);
+}
+
+export function setCachedBuildFilterResult(cacheKey: string, result: BuildFilterResult): void {
+    buildFilterResultCache.set(cacheKey, result);
 }
 
 type RawCommit = { sha: string; commit: { message: string }; html_url: string };
@@ -172,7 +207,10 @@ export async function compareCommits(
             `compareCommits: ${cacheKey} — compare API returned ${rawCommits.length} of ${totalCommits} commit(s)`,
         );
         if (totalCommits > rawCommits.length) {
-            core.warning(
+            // Expected/routine (the compare API caps its commits array at 250 regardless
+            // of range size), not a problem — informational only, so this is core.info
+            // rather than core.warning.
+            core.info(
                 `${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` +
                     "commits; fetching the remainder via the commits API.",
             );
@@ -319,6 +357,7 @@ export async function getPullRequestDetails(prNumber: number): Promise<PullReque
 interface CacheFile {
     compareCommits: Record<string, Array<{ sha: string; message: string; url: string }>>;
     prForCommit: Record<string, { id: number; url: string } | null>;
+    buildFilterResults: Record<string, BuildFilterResult>;
 }
 
 // GitHub Actions caches are immutable per exact key within a scope (branch):
@@ -361,6 +400,9 @@ export async function restoreCacheForRepo(owner: string, repo: string): Promise<
         for (const [k, v] of Object.entries(cacheFile.prForCommit)) {
             prForCommitCache.set(k, v);
         }
+        for (const [k, v] of Object.entries(cacheFile.buildFilterResults ?? {})) {
+            buildFilterResultCache.set(k, v);
+        }
     } catch (err) {
         core.debug(`Cache restore unavailable or failed: ${String(err)}`);
     }
@@ -378,9 +420,14 @@ export async function saveCacheForRepo(owner: string, repo: string): Promise<voi
         for (const [k, v] of prForCommitCache.entries()) {
             prForCommitEntries[k] = v;
         }
+        const buildFilterResultEntries: CacheFile["buildFilterResults"] = {};
+        for (const [k, v] of buildFilterResultCache.entries()) {
+            buildFilterResultEntries[k] = v;
+        }
         const cacheFile: CacheFile = {
             compareCommits: compareCommitsEntries,
             prForCommit: prForCommitEntries,
+            buildFilterResults: buildFilterResultEntries,
         };
         fs.writeFileSync(filePath, JSON.stringify(cacheFile), "utf8");
         const runId = process.env["GITHUB_RUN_ID"] ?? Date.now().toString();
