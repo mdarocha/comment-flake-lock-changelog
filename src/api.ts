@@ -151,10 +151,13 @@ export async function compareCommits(
     const cacheKey = `${owner}/${repo}@${base}...${head}`;
     const cached = compareCommitsCache.get(cacheKey);
     if (cached !== undefined) {
+        core.info(`compareCommits: ${cacheKey} — cache hit, ${cached.length} commit(s)`);
         return cached;
     }
 
     const client = getGithubClient();
+
+    core.info(`compareCommits: ${cacheKey} — comparing`);
 
     try {
         const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
@@ -165,12 +168,16 @@ export async function compareCommits(
 
         let rawCommits: RawCommit[] = compareData.commits;
         const totalCommits = compareData.total_commits ?? rawCommits.length;
+        core.info(
+            `compareCommits: ${cacheKey} — compare API returned ${rawCommits.length} of ${totalCommits} commit(s)`,
+        );
         if (totalCommits > rawCommits.length) {
             core.warning(
                 `${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` +
                     "commits; fetching the remainder via the commits API.",
             );
             rawCommits = await listCommitsBetween(client, owner, repo, base, head, totalCommits);
+            core.info(`compareCommits: ${cacheKey} — recovered ${rawCommits.length} commit(s) via pagination fallback`);
         }
 
         const result = rawCommits.map((commit) => ({
