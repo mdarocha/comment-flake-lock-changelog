@@ -21,17 +21,37 @@ export async function getPullRequestChangedFiles(prNumber: number): Promise<stri
     const client = getGithubClient();
     const { repo } = github.context;
 
-    const result = await client.graphql<GetPullRequestChangedFilesResponse>(GetPullRequestChangedFilesQuery, {
-        ...repo,
-        prNumber,
-    });
+    const paths: string[] = [];
+    let after: string | null = null;
+    let totalCount = 0;
 
-    const data = result.repository.pullRequest.files;
-    if (data.totalCount > data.nodes.length) {
+    // The PR's file list is paginated by GitHub's GraphQL API (100 per page); walk every
+    // page via pageInfo.hasNextPage/endCursor instead of only ever reading the first one.
+    for (;;) {
+        const result: GetPullRequestChangedFilesResponse = await client.graphql<GetPullRequestChangedFilesResponse>(
+            GetPullRequestChangedFilesQuery,
+            {
+                ...repo,
+                prNumber,
+                after,
+            },
+        );
+
+        const data = result.repository.pullRequest.files;
+        totalCount = data.totalCount;
+        paths.push(...data.nodes.map((node) => node.path));
+
+        if (!data.pageInfo.hasNextPage) {
+            break;
+        }
+        after = data.pageInfo.endCursor;
+    }
+
+    if (totalCount > paths.length) {
         core.warning("Not all files were loaded due to a large PR diff, some files may be missing from the changelog.");
     }
 
-    return data.nodes.map((node) => node.path);
+    return paths;
 }
 
 export async function getPullRequestRefs(prNumber: number): Promise<{ base: string; head: string }> {
@@ -71,6 +91,57 @@ export function clearCaches(): void {
     prForCommitCache.clear();
 }
 
+type RawCommit = { sha: string; commit: { message: string }; html_url: string };
+
+/**
+ * GitHub's compare API caps the `commits` array at 250 entries regardless of the
+ * range's real size (`total_commits` reports the true count but the array itself
+ * isn't paginated further). When that cap is hit, walk `head`'s history via the
+ * (properly paginated) commits API instead, collecting everything down to `base`,
+ * so ranges beyond the cap aren't silently dropped from the changelog or the
+ * build-filter bisect.
+ */
+async function listCommitsBetween(
+    client: ReturnType<typeof getGithubClient>,
+    owner: string,
+    repo: string,
+    base: string,
+    head: string,
+    totalCommits: number,
+): Promise<RawCommit[]> {
+    const collected: RawCommit[] = [];
+    // Safety margin in case history doesn't converge on `base` within a sane number
+    // of commits (e.g. unexpected force-push); avoids paginating indefinitely.
+    const hardLimit = totalCommits * 4 + 1000;
+
+    for await (const { data: page } of client.paginate.iterator(client.rest.repos.listCommits, {
+        owner,
+        repo,
+        sha: head,
+        per_page: 100,
+    })) {
+        for (const commit of page as RawCommit[]) {
+            if (commit.sha === base) {
+                return collected.reverse();
+            }
+            collected.push(commit);
+            if (collected.length >= hardLimit) {
+                core.warning(
+                    `${owner}/${repo}@${base}...${head}: gave up walking commit history after ${collected.length} ` +
+                        `commits without finding ${base}; changelog may be incomplete.`,
+                );
+                return collected.reverse();
+            }
+        }
+    }
+
+    core.warning(
+        `${owner}/${repo}@${base}...${head}: reached the end of ${head}'s history without finding ${base}; ` +
+            "changelog may be incomplete.",
+    );
+    return collected.reverse();
+}
+
 export async function compareCommits(
     owner: string,
     repo: string,
@@ -80,10 +151,13 @@ export async function compareCommits(
     const cacheKey = `${owner}/${repo}@${base}...${head}`;
     const cached = compareCommitsCache.get(cacheKey);
     if (cached !== undefined) {
+        core.info(`compareCommits: ${cacheKey} — cache hit, ${cached.length} commit(s)`);
         return cached;
     }
 
     const client = getGithubClient();
+
+    core.info(`compareCommits: ${cacheKey} — comparing`);
 
     try {
         const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
@@ -92,7 +166,21 @@ export async function compareCommits(
             basehead: `${base}...${head}`,
         });
 
-        const result = compareData.commits.map((commit) => ({
+        let rawCommits: RawCommit[] = compareData.commits;
+        const totalCommits = compareData.total_commits ?? rawCommits.length;
+        core.info(
+            `compareCommits: ${cacheKey} — compare API returned ${rawCommits.length} of ${totalCommits} commit(s)`,
+        );
+        if (totalCommits > rawCommits.length) {
+            core.warning(
+                `${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` +
+                    "commits; fetching the remainder via the commits API.",
+            );
+            rawCommits = await listCommitsBetween(client, owner, repo, base, head, totalCommits);
+            core.info(`compareCommits: ${cacheKey} — recovered ${rawCommits.length} commit(s) via pagination fallback`);
+        }
+
+        const result = rawCommits.map((commit) => ({
             sha: commit.sha,
             message: commit.commit.message.split("\n")[0],
             url: commit.html_url,

@@ -1,7 +1,17 @@
+import * as core from "@actions/core";
 import * as fs from "fs";
 import { spawnSync } from "node:child_process";
 import * as os from "os";
 import * as path from "path";
+
+const LOG_FINGERPRINT_MAX_LENGTH = 200;
+
+function truncateForLog(value: string, maxLength = LOG_FINGERPRINT_MAX_LENGTH): string {
+    if (value.length <= maxLength) {
+        return value;
+    }
+    return `${value.slice(0, maxLength)}... (${value.length} chars total)`;
+}
 
 type Commit = { sha: string; message: string; url: string };
 
@@ -88,23 +98,38 @@ export function filterCommitsByBuildRelevance(
         throw new Error("git not found in PATH \u2014 cannot run build-filter");
     }
 
+    core.info(
+        `build-filter: ${diff.owner}/${diff.repo} \u2014 evaluating ${commits.length} commit(s) between ` +
+            `${diff.beforeRev} and ${diff.rev}`,
+    );
+
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cflc-"));
     try {
         const repoPath = path.join(tmpDir, "repo");
         const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
 
+        core.info(`build-filter: cloning ${repoUrl}`);
         // Blobless clone: fetch tree metadata only; blobs are fetched on demand during checkout.
         const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
         if (cloneResult.exitCode !== 0) {
             throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
         }
 
-        // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha
-        const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
+        // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha. The final element
+        // is always diff.rev (the actual head of the range) rather than commits[N-1].sha:
+        // compareCommits' underlying API caps how many commits it returns per call, so if
+        // that cap is ever hit the last entry in `commits` would not be the true head and
+        // the bisect's upper endpoint would silently land short of the real range.
+        const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
+        const allShas =
+            lastCommitSha === diff.rev
+                ? [diff.beforeRev, ...commits.map((c) => c.sha)]
+                : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
 
         const cmdParts = ["sh", "-c", buildCommand];
 
         const buildFn = (sha: string): string => {
+            core.info(`build-filter: building ${sha}`);
             const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
             if (checkoutResult.exitCode !== 0) {
                 throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
@@ -121,7 +146,9 @@ export function filterCommitsByBuildRelevance(
             if (result.exitCode !== 0) {
                 throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
             }
-            return result.stdout.trim();
+            const fingerprint = result.stdout.trim();
+            core.info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+            return fingerprint;
         };
 
         // Build at endpoints
@@ -132,6 +159,12 @@ export function filterCommitsByBuildRelevance(
         outputs.set(0, outFirst);
         outputs.set(allShas.length - 1, outLast);
 
+        if (outFirst === outLast) {
+            core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
+        } else {
+            core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
+        }
+
         // Bisect to find all change boundaries
         bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
 
@@ -140,12 +173,19 @@ export function filterCommitsByBuildRelevance(
         const irrelevant: Commit[] = [];
 
         for (let i = 0; i < commits.length; i++) {
-            if (outputs.get(i + 1) !== outputs.get(i)) {
+            const isRelevant = outputs.get(i + 1) !== outputs.get(i);
+            core.info(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+            if (isRelevant) {
                 relevant.push(commits[i]);
             } else {
                 irrelevant.push(commits[i]);
             }
         }
+
+        core.info(
+            `build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` +
+                `irrelevant commit(s) out of ${commits.length}`,
+        );
 
         return { relevant, irrelevant };
     } finally {

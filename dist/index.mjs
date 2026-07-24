@@ -66431,10 +66431,10 @@ var GetFileContentAtCommit_default = `query GetFileContentAtCommit($owner: Strin
 `;
 
 // src/queries/GetPullRequestChangedFiles.graphql
-var GetPullRequestChangedFiles_default = `query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!) {
+var GetPullRequestChangedFiles_default = `query GetPullRequestChangedFiles($owner: String!, $repo: String!, $prNumber: Int!, $after: String) {
     repository(owner: $owner, name: $repo) {
         pullRequest(number: $prNumber) {
-            files(first: 100) {
+            files(first: 100, after: $after) {
                 totalCount
                 pageInfo {
                     endCursor
@@ -66468,15 +66468,27 @@ function getGithubClient() {
 async function getPullRequestChangedFiles(prNumber) {
   const client = getGithubClient();
   const { repo } = context4;
-  const result = await client.graphql(GetPullRequestChangedFiles_default, {
-    ...repo,
-    prNumber
-  });
-  const data = result.repository.pullRequest.files;
-  if (data.totalCount > data.nodes.length) {
+  const paths = [];
+  let after = null;
+  let totalCount = 0;
+  for (;; ) {
+    const result = await client.graphql(GetPullRequestChangedFiles_default, {
+      ...repo,
+      prNumber,
+      after
+    });
+    const data = result.repository.pullRequest.files;
+    totalCount = data.totalCount;
+    paths.push(...data.nodes.map((node) => node.path));
+    if (!data.pageInfo.hasNextPage) {
+      break;
+    }
+    after = data.pageInfo.endCursor;
+  }
+  if (totalCount > paths.length) {
     warning("Not all files were loaded due to a large PR diff, some files may be missing from the changelog.");
   }
-  return data.nodes.map((node) => node.path);
+  return paths;
 }
 async function getPullRequestRefs(prNumber) {
   const client = getGithubClient();
@@ -66502,20 +66514,53 @@ async function getFileContentAtCommit(commit, filePath) {
 }
 var compareCommitsCache = new Map;
 var prForCommitCache = new Map;
+async function listCommitsBetween(client, owner, repo, base, head, totalCommits) {
+  const collected = [];
+  const hardLimit = totalCommits * 4 + 1000;
+  for await (const { data: page } of client.paginate.iterator(client.rest.repos.listCommits, {
+    owner,
+    repo,
+    sha: head,
+    per_page: 100
+  })) {
+    for (const commit of page) {
+      if (commit.sha === base) {
+        return collected.reverse();
+      }
+      collected.push(commit);
+      if (collected.length >= hardLimit) {
+        warning(`${owner}/${repo}@${base}...${head}: gave up walking commit history after ${collected.length} ` + `commits without finding ${base}; changelog may be incomplete.`);
+        return collected.reverse();
+      }
+    }
+  }
+  warning(`${owner}/${repo}@${base}...${head}: reached the end of ${head}'s history without finding ${base}; ` + "changelog may be incomplete.");
+  return collected.reverse();
+}
 async function compareCommits(owner, repo, base, head) {
   const cacheKey = `${owner}/${repo}@${base}...${head}`;
   const cached = compareCommitsCache.get(cacheKey);
   if (cached !== undefined) {
+    info(`compareCommits: ${cacheKey} — cache hit, ${cached.length} commit(s)`);
     return cached;
   }
   const client = getGithubClient();
+  info(`compareCommits: ${cacheKey} — comparing`);
   try {
     const { data: compareData } = await client.rest.repos.compareCommitsWithBasehead({
       owner,
       repo,
       basehead: `${base}...${head}`
     });
-    const result = compareData.commits.map((commit) => ({
+    let rawCommits = compareData.commits;
+    const totalCommits = compareData.total_commits ?? rawCommits.length;
+    info(`compareCommits: ${cacheKey} — compare API returned ${rawCommits.length} of ${totalCommits} commit(s)`);
+    if (totalCommits > rawCommits.length) {
+      warning(`${owner}/${repo}@${base}...${head}: compare API returned ${rawCommits.length} of ${totalCommits} ` + "commits; fetching the remainder via the commits API.");
+      rawCommits = await listCommitsBetween(client, owner, repo, base, head, totalCommits);
+      info(`compareCommits: ${cacheKey} — recovered ${rawCommits.length} commit(s) via pagination fallback`);
+    }
+    const result = rawCommits.map((commit) => ({
       sha: commit.sha,
       message: commit.commit.message.split(`
 `)[0],
@@ -66668,6 +66713,13 @@ import * as fs8 from "fs";
 import { spawnSync } from "node:child_process";
 import * as os8 from "os";
 import * as path12 from "path";
+var LOG_FINGERPRINT_MAX_LENGTH = 200;
+function truncateForLog(value, maxLength = LOG_FINGERPRINT_MAX_LENGTH) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength)}... (${value.length} chars total)`;
+}
 function spawnCmd(cmd, opts) {
   const result = spawnSync(cmd[0], cmd.slice(1), {
     ...opts?.cwd !== undefined ? { cwd: opts.cwd } : {},
@@ -66703,17 +66755,21 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
   if (!isGitAvailable()) {
     throw new Error("git not found in PATH — cannot run build-filter");
   }
+  info(`build-filter: ${diff.owner}/${diff.repo} — evaluating ${commits.length} commit(s) between ` + `${diff.beforeRev} and ${diff.rev}`);
   const tmpDir = fs8.mkdtempSync(path12.join(os8.tmpdir(), "cflc-"));
   try {
     const repoPath = path12.join(tmpDir, "repo");
     const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
+    info(`build-filter: cloning ${repoUrl}`);
     const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
     if (cloneResult.exitCode !== 0) {
       throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
     }
-    const allShas = [diff.beforeRev, ...commits.map((c) => c.sha)];
+    const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
+    const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
     const cmdParts = ["sh", "-c", buildCommand];
     const buildFn = (sha) => {
+      info(`build-filter: building ${sha}`);
       const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
       if (checkoutResult.exitCode !== 0) {
         throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
@@ -66730,23 +66786,33 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
       if (result.exitCode !== 0) {
         throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
       }
-      return result.stdout.trim();
+      const fingerprint = result.stdout.trim();
+      info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+      return fingerprint;
     };
     const outFirst = buildFn(allShas[0]);
     const outLast = buildFn(allShas[allShas.length - 1]);
     const outputs = new Map;
     outputs.set(0, outFirst);
     outputs.set(allShas.length - 1, outLast);
+    if (outFirst === outLast) {
+      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
+    } else {
+      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
+    }
     bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
     const relevant = [];
     const irrelevant = [];
     for (let i = 0;i < commits.length; i++) {
-      if (outputs.get(i + 1) !== outputs.get(i)) {
+      const isRelevant = outputs.get(i + 1) !== outputs.get(i);
+      info(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+      if (isRelevant) {
         relevant.push(commits[i]);
       } else {
         irrelevant.push(commits[i]);
       }
     }
+    info(`build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` + `irrelevant commit(s) out of ${commits.length}`);
     return { relevant, irrelevant };
   } finally {
     fs8.rmSync(tmpDir, { recursive: true, force: true });

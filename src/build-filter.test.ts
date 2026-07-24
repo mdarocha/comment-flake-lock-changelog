@@ -109,4 +109,52 @@ describe("filterCommitsByBuildRelevance", () => {
         expect(relevant.map((c) => c.sha)).toEqual(["c1"]);
         expect(irrelevant.map((c) => c.sha)).toEqual(["c2"]);
     });
+
+    test("bisects against diff.rev, not the last entry of a truncated commits array", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+
+        // Simulates compareCommits' 250-commit API cap: the `commits` array passed in
+        // stops at "c2", but the real range extends to diff.rev ("head"), where a
+        // relevant change actually lives beyond what's visible in `commits`. Regression
+        // test for https://github.com/mdarocha/comment-flake-lock-changelog/issues/316.
+        //
+        // Attributing the change to a specific commit is only possible once the caller
+        // (compareCommits) also paginates past the cap — covered separately in
+        // api.test.ts — but even without that, the bisect's upper endpoint must reflect
+        // the real head so the range is never wrongly reported as fully identical.
+        outputsBySha = { before: "out-a", c1: "out-a", c2: "out-a", head: "out-b" };
+
+        const { relevant } = filterCommitsByBuildRelevance(
+            [
+                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+            ],
+            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "head", name: "nixpkgs" },
+            'echo "$CFLC_INPUT_REV"',
+        );
+
+        // Before the fix, the bisect never built "head" at all — its endpoint was
+        // commits[commits.length - 1].sha ("c2"), whose output matches "before", so the
+        // range would be silently misreported as unaffected. Even though this particular
+        // list is too incomplete for any single commit to take the blame, the endpoint
+        // itself must be checked against the true head rather than the truncated list.
+        expect(relevant).toEqual([]);
+        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+        expect(buildShas).toContain("head");
+    });
+
+    test("does not build an extra redundant commit when the last visible commit is already diff.rev", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+
+        outputsBySha = { before: "out-a", c1: "out-b" };
+
+        filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            'echo "$CFLC_INPUT_REV"',
+        );
+
+        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+        expect(buildShas).toEqual(["before", "c1"]);
+    });
 });
