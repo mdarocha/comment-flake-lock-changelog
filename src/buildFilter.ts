@@ -44,6 +44,25 @@ function isGitAvailable(): boolean {
 }
 
 /**
+ * The `path:` fetcher (the recommended way to point `--override-input` at the
+ * per-commit checkout — see the README) copies the *entire* checked-out tree into
+ * the Nix store, content-addressed, on every single evaluation. Nothing dereferences
+ * the previous commit's copy once the checkout moves on to the next one, so on a
+ * large repo (nixpkgs is a few hundred MB to a couple GB depending on what's already
+ * substituted) a bisection touching a few dozen commits can pile up tens of GB of
+ * dead store paths that nothing ever reclaims until whatever runs `nix store gc`
+ * next — which may be too late if a later step in the same job needs that disk.
+ * Opt-in per-build collection (`gcBetweenBuilds`) bounds peak usage to roughly one
+ * checkout's worth at a time instead of the whole bisection's.
+ */
+function collectGarbage(): void {
+    const result = spawnCmd(["nix", "store", "gc"]);
+    if (result.exitCode !== 0) {
+        core.warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
+    }
+}
+
+/**
  * Bisect the commit range to find all boundary points where the build output changes.
  * O(k log N) builds where k = number of change points.
  */
@@ -88,11 +107,18 @@ function bisect(
  * k = number of output change points, instead of O(N) for a linear scan.
  *
  * Requires `git` in PATH; throws a descriptive error if missing.
+ *
+ * @param options.gcBetweenBuilds - Run `nix store gc` after every build to reclaim
+ * the `path:` fetcher's per-commit store copy before moving on to the next one. Only
+ * safe to enable if nothing else relies on Nix store paths that aren't rooted yet at
+ * the point this runs (e.g. run it before restoring any build cache in the same job)
+ * — see the README's 'Build filter' section.
  */
 export function filterCommitsByBuildRelevance(
     commits: Commit[],
     diff: Diff,
     buildCommand: string,
+    options?: { gcBetweenBuilds?: boolean },
 ): { relevant: Commit[]; irrelevant: Commit[] } {
     if (!isGitAvailable()) {
         throw new Error("git not found in PATH \u2014 cannot run build-filter");
@@ -148,6 +174,9 @@ export function filterCommitsByBuildRelevance(
             }
             const fingerprint = result.stdout.trim();
             core.info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+            if (options?.gcBetweenBuilds) {
+                collectGarbage();
+            }
             return fingerprint;
         };
 

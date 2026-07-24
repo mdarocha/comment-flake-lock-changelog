@@ -66740,6 +66740,12 @@ function spawnCmd(cmd, opts) {
 function isGitAvailable() {
   return spawnCmd(["git", "--version"]).exitCode === 0;
 }
+function collectGarbage() {
+  const result = spawnCmd(["nix", "store", "gc"]);
+  if (result.exitCode !== 0) {
+    warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
+  }
+}
 function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   if (outLo === outHi) {
     for (let i = lo + 1;i <= hi; i++)
@@ -66756,7 +66762,7 @@ function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   bisect(lo, mid, outLo, outMid, allShas, outputs, buildFn);
   bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn);
 }
-function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
+function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
   if (!isGitAvailable()) {
     throw new Error("git not found in PATH — cannot run build-filter");
   }
@@ -66793,6 +66799,9 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand) {
       }
       const fingerprint = result.stdout.trim();
       info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+      if (options?.gcBetweenBuilds) {
+        collectGarbage();
+      }
       return fingerprint;
     };
     const outFirst = buildFn(allShas[0]);
@@ -66969,6 +66978,7 @@ ${COMMENT_TAG_PATTERN}`.length;
     return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
   }
   const buildFilter = getInput("build-filter");
+  const buildFilterGc = getInput("build-filter-gc") === "true";
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -67007,7 +67017,9 @@ ${COMMENT_TAG_PATTERN}`.length;
       if (buildFilter && commits.length > 0) {
         info(`Running build-filter for ${diff.owner}/${diff.repo}`);
         try {
-          const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
+          const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+            gcBetweenBuilds: buildFilterGc
+          });
           relevant = filtered.relevant;
           irrelevant = filtered.irrelevant;
         } catch (e) {

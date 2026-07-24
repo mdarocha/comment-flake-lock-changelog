@@ -10,6 +10,7 @@ This action is meant to be used as a helper to [update-flake-lock](https://githu
 | `pull-request-number` | Id of the PR that will be analyzed by the action | none, **required** |
 | `token` | Token used for authentication with Github API | `${{ github.token }}` |
 | `build-filter` | Shell command to run at each upstream commit to determine build relevance. See [Build filter](#build-filter) below. | none |
+| `build-filter-gc` | Run `nix store gc` after every `build-filter` build to reclaim disk space. See [Build filter](#build-filter) below. | `false` |
 
 ## Example usage
 
@@ -104,10 +105,12 @@ that input, unfiltered, rather than guessing.
 > `--print-out-paths` above) is already a fingerprint of the *entire* dependency closure that went
 > into it — you don't need to wait for `nix build` to finish compiling anything to get it. Something
 > like `nix eval --raw ".#packages.<system>.default.drvPath"` (or `outPath`) computes the same
-> fingerprint through evaluation alone, without building, which is typically instant even for large
-> packages. Reach for an actual `nix build` only if you need to inspect the built result itself (for
-> example, to fingerprint a specific file inside the output) rather than just detect that something
-> changed.
+> fingerprint without building anything. It's not necessarily *instant*, though — Nix still has to
+> import whatever the input resolves to into the store before it can evaluate against it (see
+> [Disk space](#disk-space) below for what that costs on a large repo) — but it skips actually
+> compiling the package, which for anything nontrivial is the difference that matters. Reach for an
+> actual `nix build` only if you need to inspect the built result itself (for example, to fingerprint
+> a specific file inside the output) rather than just detect that something changed.
 >
 > Keep unrelated changes out of the sentinel, or every commit will look "relevant" even when nothing
 > you use actually changed. Point it at the specific output you care about (e.g.
@@ -116,6 +119,45 @@ that input, unfiltered, rather than guessing.
 > avoid anything that deliberately stamps the exact commit into the output, like a NixOS config's
 > `system.nixos.revision` set from `self.rev` — that changes on every single commit by design, which
 > defeats the filter entirely.
+
+### Disk space
+
+Every flake input has to become an immutable, content-addressed store path before Nix can evaluate
+against it — that part isn't avoidable, and since each commit in the bisection genuinely has
+different content, the store path is genuinely different every time too. For a large repo like
+nixpkgs, bisecting even a few dozen commits can pile up tens of GB of store paths this way, and
+nothing dereferences any of them once the checkout moves on to the next commit — nothing reclaims
+that until whatever runs `nix store gc` next, which can be too late if a later step in the same job
+needs that disk.
+
+**Prefer `git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV` over `path:$CFLC_INPUT_PATH`.** This
+action always checks `CFLC_INPUT_PATH` out to the commit under test before running your command (so
+the needed blobs get fetched from the blobless clone's promisor remote — see below), but `path:`
+then has Nix separately re-read and re-hash that checked-out working tree from the filesystem to
+import it into the store. `git+file://...?rev=...` instead has Nix read the commit straight out of
+the repository's already-populated object database, skipping that redundant filesystem pass:
+
+```yaml
+- uses: mdarocha/comment-flake-lock-changelog@main
+  with:
+    pull-request-number: ${{ github.event.pull_request.number }}
+    build-filter: 'nix eval --override-input "$CFLC_INPUT_NAME" "git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV" --raw ".#packages.<system>.default.drvPath"'
+```
+
+> [!NOTE]
+> Don't try to skip the internal `git checkout` yourself (e.g. by shallow-fetching only the specific
+> commit you need) to save even more disk. Nix's git fetcher is built on libgit2, which — unlike the
+> `git` CLI — doesn't understand partial-clone/promisor-remote metadata and can't lazily fetch a
+> missing blob on its own; it just fails with "object not found" if the blob was never fetched by
+> something else first. The internal checkout is what performs that fetch, via the real `git` CLI, so
+> `git+file://` can find what it needs.
+
+Either way, set `build-filter-gc: true` to run `nix store gc` after every build, bounding peak usage
+to roughly one checkout's worth instead of the whole bisection's. Only enable it if nothing else in
+the job depends on Nix store paths that aren't rooted yet at the point this action runs — a store
+path that was merely *restored* (from a build cache, say) isn't necessarily a GC root, so if this
+action runs after that restore, `build-filter-gc` can delete the very cache you just restored. Run
+this action **before** restoring any build cache in the job if you turn it on.
 
 ### Inputs that change together
 

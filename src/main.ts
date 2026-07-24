@@ -224,6 +224,7 @@ export async function run(): Promise<void> {
     }
 
     const buildFilter = core.getInput("build-filter");
+    const buildFilterGc = core.getInput("build-filter-gc") === "true";
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -288,7 +289,9 @@ export async function run(): Promise<void> {
             if (buildFilter && commits.length > 0) {
                 core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
                 try {
-                    const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter);
+                    const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+                        gcBetweenBuilds: buildFilterGc,
+                    });
                     relevant = filtered.relevant;
                     irrelevant = filtered.irrelevant;
                 } catch (e) {
