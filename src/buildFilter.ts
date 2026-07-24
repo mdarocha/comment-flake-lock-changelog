@@ -151,10 +151,12 @@ function bisect(
 /**
  * Filter commits by whether they affect the build output.
  *
- * Only the commits the bisect can possibly check out (the range's endpoints plus
- * every commit in between) are fetched from the upstream repo, each as its own
- * isolated, blobless, depth-1 commit — not a full clone of the repo's history. For
- * each build, the user-provided build command is run as-is in process.cwd() (the
+ * Each commit the bisect actually checks out is fetched individually, right before
+ * it's needed, as its own isolated, blobless, depth-1 commit — not a full clone of
+ * the repo's history, and not the whole commit range up front (bisection only ever
+ * touches O(log N) of the range's commits, so fetching all of it defeats the point
+ * and risks the fetch itself failing on a wide range). For each build, the
+ * user-provided build command is run as-is in process.cwd() (the
  * Actions workspace) with CFLC_INPUT_NAME set to the flake input's name,
  * CFLC_INPUT_PATH set to the upstream checkout, and CFLC_INPUT_REV set to the SHA.
  * CFLC_INPUT_NAME lets a single build command handle whichever input is currently
@@ -203,12 +205,6 @@ export function filterCommitsByBuildRelevance(
             lastCommitSha === diff.rev
                 ? [diff.beforeRev, ...commits.map((c) => c.sha)]
                 : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
-        // The bisect never checks out anything outside allShas, so fetch exactly those
-        // commits — deduplicated, each pulled in as an isolated shallow tip rather than
-        // walking the repo's real history — instead of cloning the whole repo. For a
-        // large history like nixpkgs, this turns a clone that has to walk the entire
-        // commit graph into a fetch of a few dozen standalone trees.
-        const candidateShas = [...new Set(allShas)];
 
         const initResult = spawnCmd(["git", "init", repoPath]);
         if (initResult.exitCode !== 0) {
@@ -219,20 +215,23 @@ export function filterCommitsByBuildRelevance(
             throw new Error(`Failed to add remote ${repoUrl}: ${remoteResult.stderr}`);
         }
 
-        core.info(`build-filter: fetching ${candidateShas.length} candidate commit(s) from ${repoUrl}`);
-        // Blobless, depth-1 fetch: tree metadata only, no ancestor history; blobs are
-        // fetched on demand during checkout via the promisor remote.
-        const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", ...candidateShas], {
-            cwd: repoPath,
-        });
-        if (fetchResult.exitCode !== 0) {
-            throw new Error(`Failed to fetch commits from ${repoUrl}: ${fetchResult.stderr}`);
-        }
-
         const cmdParts = ["sh", "-c", buildCommand];
 
         const buildFn = (sha: string): string => {
             core.info(`build-filter: building ${sha}`);
+            // Bisection only ever touches O(log N) of the range's commits, so fetch each
+            // one right before it's needed instead of the whole range up front — fetching
+            // every commit in a wide range (a multi-day nixpkgs bump can be thousands) in
+            // one request defeats the point of bisecting and risks the fetch itself timing
+            // out or hitting a server-side limit on how many commits can be requested at
+            // once. Blobless, depth-1: tree metadata only, no ancestor history; blobs are
+            // fetched on demand during checkout via the promisor remote.
+            const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", sha], {
+                cwd: repoPath,
+            });
+            if (fetchResult.exitCode !== 0) {
+                throw new Error(`Failed to fetch ${sha} from ${repoUrl}: ${fetchResult.stderr}`);
+            }
             const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
             if (checkoutResult.exitCode !== 0) {
                 throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);

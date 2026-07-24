@@ -120,8 +120,10 @@ that input, unfiltered, rather than guessing.
 
 ### Disk space
 
-The action only fetches the commits the bisection might actually need to check out, the range's
-endpoints and everything in between, not the repository's full history. Even so, every flake input
+The action fetches each commit individually, right before the bisection checks it out, instead of
+cloning the repository's full history. Bisection only ever touches a logarithmic slice of the range
+(a handful of commits, not the whole thing), so this stays cheap even for a range spanning thousands
+of commits. Even so, every flake input
 still has to become its own immutable, content-addressed store path before Nix can evaluate against
 it, and since each commit in the bisection genuinely has different content, that store path is
 different every time too. For a large repo like nixpkgs, bisecting even a few dozen commits can pile

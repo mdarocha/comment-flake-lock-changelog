@@ -66832,7 +66832,6 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
     const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
     const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
     const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
-    const candidateShas = [...new Set(allShas)];
     const initResult = spawnCmd(["git", "init", repoPath]);
     if (initResult.exitCode !== 0) {
       throw new Error(`Failed to init repo at ${repoPath}: ${initResult.stderr}`);
@@ -66841,16 +66840,15 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
     if (remoteResult.exitCode !== 0) {
       throw new Error(`Failed to add remote ${repoUrl}: ${remoteResult.stderr}`);
     }
-    info(`build-filter: fetching ${candidateShas.length} candidate commit(s) from ${repoUrl}`);
-    const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", ...candidateShas], {
-      cwd: repoPath
-    });
-    if (fetchResult.exitCode !== 0) {
-      throw new Error(`Failed to fetch commits from ${repoUrl}: ${fetchResult.stderr}`);
-    }
     const cmdParts = ["sh", "-c", buildCommand];
     const buildFn = (sha) => {
       info(`build-filter: building ${sha}`);
+      const fetchResult = spawnCmd(["git", "fetch", "--filter=blob:none", "--depth=1", "origin", sha], {
+        cwd: repoPath
+      });
+      if (fetchResult.exitCode !== 0) {
+        throw new Error(`Failed to fetch ${sha} from ${repoUrl}: ${fetchResult.stderr}`);
+      }
       const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
       if (checkoutResult.exitCode !== 0) {
         throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
