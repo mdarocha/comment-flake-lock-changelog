@@ -23,12 +23,19 @@ let upsertCommentMock: Mock<(prNumber: number, body: string) => Promise<void>>;
 let getPullRequestDetailsMock: Mock<() => Promise<PullRequestDetails>>;
 let getFileContentAtCommitMock: Mock<(commit: string, path: string) => Promise<string>>;
 let warningMock: Mock<(message: string) => void>;
+let infoMock: Mock<(message: string) => void>;
+let debugMock: Mock<(message: string) => void>;
+let isDebugEnabled = false;
 let buildFilterInput = "";
 let buildFilterGcInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let filterCommitsByBuildRelevanceMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let getCachedBuildFilterResultMock: Mock<any>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let setCachedBuildFilterResultMock: Mock<any>;
 
 beforeEach(async () => {
     upsertCommentMock = mock(async () => {});
@@ -41,10 +48,15 @@ beforeEach(async () => {
     );
     compareCommitsMock = mock(async () => []);
     warningMock = mock(() => {});
+    infoMock = mock(() => {});
+    debugMock = mock(() => {});
+    isDebugEnabled = false;
     buildFilterInput = "";
     buildFilterGcInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
+    getCachedBuildFilterResultMock = mock(() => undefined);
+    setCachedBuildFilterResultMock = mock(() => {});
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
@@ -54,8 +66,10 @@ beforeEach(async () => {
                 if (input === "build-filter-gc") return buildFilterGcInput;
                 return "";
             }),
-            info: mock(() => {}),
+            info: infoMock,
             warning: warningMock,
+            isDebug: mock(() => isDebugEnabled),
+            debug: debugMock,
         })),
         await mockModule("~/api", () => ({
             getPullRequestChangedFiles: mock(async () => ["flake.lock"]),
@@ -67,9 +81,16 @@ beforeEach(async () => {
             upsertComment: upsertCommentMock,
             restoreCacheForRepo: mock(async () => {}),
             saveCacheForRepo: mock(async () => {}),
+            buildFilterCacheKey: mock(
+                (nixStateHash: string, buildCommand: string, diff: { beforeRev: string; rev: string; name: string }) =>
+                    `${nixStateHash}:${buildCommand}:${diff.name}@${diff.beforeRev}...${diff.rev}`,
+            ),
+            getCachedBuildFilterResult: getCachedBuildFilterResultMock,
+            setCachedBuildFilterResult: setCachedBuildFilterResultMock,
         })),
         await mockModule("~/buildFilter", () => ({
             filterCommitsByBuildRelevance: filterCommitsByBuildRelevanceMock,
+            computeNixStateHash: mock(() => "fake-nix-state-hash"),
         })),
     ];
 });
@@ -87,6 +108,17 @@ describe("run", () => {
         const { run } = await import("~/main");
         await run();
         expect(upsertCommentMock).not.toHaveBeenCalled();
+    });
+
+    test("still posts a comment for dependabot when build-filter is set, even if compare URLs are already present", async () => {
+        // build-filter's relevant/irrelevant split is information dependabot's own PR
+        // description never has, so it's worth posting even when the redundant-compare-URL
+        // skip would otherwise apply.
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+        expect(upsertCommentMock).toHaveBeenCalledTimes(1);
     });
 
     test("posts comment when dependabot PR body is missing a compare URL", async () => {
@@ -193,6 +225,66 @@ describe("run", () => {
         expect(body.length).toBeLessThan(65536);
     });
 
+    test("never logs a per-commit PR-lookup line via core.info, even over a large irrelevant list", async () => {
+        // Regression test: a wide flake.lock bump can classify thousands of commits as
+        // irrelevant, and an unconditional core.info() per commit in the render loop is
+        // enough synchronous stdout writes to crash the whole action with EPIPE — the
+        // same failure mode buildFilter.ts's per-commit classification logging was fixed
+        // for previously. This loop (main.ts's PR-lookup pass) had the same bug.
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const relevantCommit = {
+            sha: "sha0",
+            message: "relevant commit",
+            url: "https://github.com/NixOS/nixpkgs/commit/sha0",
+        };
+        const irrelevantCommits = Array.from({ length: 250 }, (_, i) => ({
+            sha: `irr${i}`,
+            message: `irrelevant commit ${i}`,
+            url: `https://github.com/NixOS/nixpkgs/commit/irr${i}`,
+        }));
+        compareCommitsMock.mockImplementation(async () => [relevantCommit, ...irrelevantCommits]);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({
+            relevant: [relevantCommit],
+            irrelevant: irrelevantCommits,
+        }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(infoMock.mock.calls.some((c) => String(c[0]).includes("Checking for PRs"))).toBe(false);
+    });
+
+    test("logs the per-commit PR-lookup line via core.debug when step debugging is on", async () => {
+        isDebugEnabled = true;
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({
+            relevant: [commits[0]],
+            irrelevant: [commits[1]],
+        }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(
+            debugMock.mock.calls.some((c) =>
+                String(c[0]).includes(`Checking for PRs associated with commit ${commits[1].sha}`),
+            ),
+        ).toBe(true);
+    });
+
     test("splits commits into a relevant list and a collapsed irrelevant section when build-filter is set", async () => {
         getPullRequestDetailsMock.mockImplementation(async () => ({
             authorLogin: "someone",
@@ -229,6 +321,52 @@ describe("run", () => {
         const summaryIndex = body.indexOf("that did not affect the build output");
         const irrelevantCommitIndex = body.indexOf("irrelevant commit");
         expect(irrelevantCommitIndex).toBeGreaterThan(summaryIndex);
+    });
+
+    test("skips filterCommitsByBuildRelevance entirely on a build-filter result cache hit", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [
+            { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
+            { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        const cached = { relevant: [commits[0]], irrelevant: [commits[1]] };
+        getCachedBuildFilterResultMock.mockImplementation(() => cached);
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).not.toHaveBeenCalled();
+        expect(setCachedBuildFilterResultMock).not.toHaveBeenCalled();
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("relevant commit");
+        expect(body).toContain("1 commit that did not affect the build output");
+    });
+
+    test("stores the build-filter result in the cache on a cache miss", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        const filtered = { relevant: commits, irrelevant: [] };
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => filtered);
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        expect(setCachedBuildFilterResultMock).toHaveBeenCalledTimes(1);
+        const [cacheKey, storedResult] = setCachedBuildFilterResultMock.mock.calls[0] as [string, typeof filtered];
+        expect(typeof cacheKey).toBe("string");
+        expect(storedResult).toEqual(filtered);
     });
 
     test("passes gcBetweenBuilds through to build-filter only when build-filter-gc is set", async () => {

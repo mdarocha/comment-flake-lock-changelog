@@ -1,16 +1,17 @@
 # Comment `flake.lock` changelog
 
-Automatically add comments to pull requests that modify flake.lock files, summarizing the changes made to the flake inputs.
-This action is meant to be used as a helper to [update-flake-lock](https://github.com/DeterminateSystems/update-flake-lock).
+Adds a comment to pull requests that modify `flake.lock`, summarizing what changed in each flake
+input. Meant as a companion to
+[update-flake-lock](https://github.com/DeterminateSystems/update-flake-lock).
 
 ## Inputs
 
 | Input | Description | Default |
 | :-- | :-- | :-- |
-| `pull-request-number` | Id of the PR that will be analyzed by the action | none, **required** |
-| `token` | Token used for authentication with Github API | `${{ github.token }}` |
-| `build-filter` | Shell command to run at each upstream commit to determine build relevance. See [Build filter](#build-filter) below. | none |
-| `build-filter-gc` | Run `nix store gc` after every `build-filter` build to reclaim disk space. See [Build filter](#build-filter) below. | `false` |
+| `pull-request-number` | Id of the PR to analyze | none, **required** |
+| `token` | Token used for authentication with the GitHub API | `${{ github.token }}` |
+| `build-filter` | Shell command run at each upstream commit to determine build relevance. See [Build filter](#build-filter). | none |
+| `build-filter-gc` | Run `nix store gc` after every `build-filter` build to reclaim disk space. See [Build filter](#build-filter). | `false` |
 
 ## Example usage
 
@@ -53,17 +54,17 @@ jobs:
 
 ## Build filter
 
-Not every upstream commit in a `flake.lock` bump actually changes what gets built — a `nixpkgs`
-update, for example, usually drags in a lot of commits that only touch docs, unrelated packages, or
-CI. Setting `build-filter` builds your flake at a handful of commits in the range and tucks the
-commits that turned out not to affect the build output into a collapsed "did not affect the build
-output" section, so the changelog highlights what actually matters.
+A `flake.lock` bump often drags in commits that don't actually change what gets built, docs,
+unrelated packages, or CI tweaks in a `nixpkgs` update, for instance. Setting `build-filter` builds
+your flake at a handful of commits in the range and moves the ones that turn out not to affect the
+output into a collapsed "did not affect the build output" section, so the changelog highlights what
+actually matters.
 
-`build-filter` is a shell command that the action runs at various upstream commits and whose output
-it uses to tell "the build changed" from "the build didn't change". It's evaluated once per changed
-input (so the same command applies to `nixpkgs`, `flake-utils`, or any other input in your lockfile
-— see [environment variables](#environment-variables) below), and it only runs at a handful of
-commits per input, not every commit in the range, so it stays cheap even for large ranges.
+`build-filter` is a shell command. The action runs it at a handful of upstream commits, not every
+commit in the range, so it stays cheap even for large ranges, and compares its stdout between them to
+tell "the build changed" from "the build didn't change." It runs once per changed input, so the same
+command can apply to `nixpkgs`, `flake-utils`, or anything else in your lockfile (see
+[environment variables](#environment-variables)).
 
 ### Example usage
 
@@ -75,67 +76,62 @@ commits per input, not every commit in the range, so it stays cheap even for lar
 ```
 
 This overrides whichever input is currently being tested with the upstream checkout at the commit
-being tested, builds it, and prints the resulting store path — which the action uses as the
-fingerprint for that commit.
+under test, builds it, and prints the resulting store path, which the action uses as that commit's
+fingerprint.
 
 ### Environment variables
 
 | Variable | Description |
 | :-- | :-- |
-| `CFLC_INPUT_NAME` | The name of the flake input being tested, e.g. `nixpkgs`. Use it instead of hardcoding an input name in your command, so the same `build-filter` works for every input in the lockfile. |
+| `CFLC_INPUT_NAME` | Name of the flake input being tested, e.g. `nixpkgs`. Use it instead of hardcoding an input name, so the same `build-filter` works for every input in the lockfile. |
 | `CFLC_INPUT_PATH` | Path to the upstream checkout, at the commit currently being tested. |
 | `CFLC_INPUT_REV` | The commit SHA currently checked out at `CFLC_INPUT_PATH`. |
 
 ### What your command should output
 
-The action treats your command's **stdout** as an opaque fingerprint — it doesn't inspect what the
-value means, it just compares it between commits. For that comparison to be meaningful, the output
-should be:
+The action treats your command's stdout as an opaque fingerprint. It doesn't interpret the value, it
+just compares it between commits, so the output should be:
 
-- **Deterministic** — the same commit should always produce the same fingerprint.
-- **Sensitive to changes that matter, and nothing else** — it should change whenever something a
-  consumer of your flake would actually notice changes (a package version, its contents, ...), and
-  stay stable otherwise (ignore embedded timestamps, build-machine-specific paths, etc.).
+- **Deterministic.** The same commit should always produce the same fingerprint.
+- **Sensitive to changes that matter, and nothing else.** It should change whenever something a
+  consumer of your flake would actually notice (a package version, its contents), and stay stable
+  otherwise (ignore embedded timestamps, build-machine-specific paths, etc.).
 
 If the command exits non-zero, the action logs a warning and falls back to showing every commit for
 that input, unfiltered, rather than guessing.
 
 > [!TIP]
 > Prefer a **change sentinel** over a full build where you can. A Nix output path (like
-> `--print-out-paths` above) is already a fingerprint of the *entire* dependency closure that went
-> into it — you don't need to wait for `nix build` to finish compiling anything to get it. Something
-> like `nix eval --raw ".#packages.<system>.default.drvPath"` (or `outPath`) computes the same
-> fingerprint without building anything. It's not necessarily *instant*, though — Nix still has to
-> import whatever the input resolves to into the store before it can evaluate against it (see
-> [Disk space](#disk-space) below for what that costs on a large repo) — but it skips actually
-> compiling the package, which for anything nontrivial is the difference that matters. Reach for an
-> actual `nix build` only if you need to inspect the built result itself (for example, to fingerprint
-> a specific file inside the output) rather than just detect that something changed.
+> `--print-out-paths` above) already fingerprints the entire dependency closure that went into it, so
+> you don't need to wait for `nix build` to finish compiling anything. Something like
+> `nix eval --raw ".#packages.<system>.default.drvPath"` (or `outPath`) computes the same fingerprint
+> without building anything. It's not necessarily instant either (see [Disk space](#disk-space) for
+> what importing an input into the store costs on a large repo), but it skips compiling the package,
+> which for anything nontrivial is the difference that matters. Reach for an actual `nix build` only
+> if you need to inspect the built result itself, for example to fingerprint a specific file inside
+> the output.
 >
 > Keep unrelated changes out of the sentinel, or every commit will look "relevant" even when nothing
 > you use actually changed. Point it at the specific output you care about (e.g.
-> `packages.<system>.default`) instead of something broad like all of nixpkgs — that way doc and
-> manual updates elsewhere in the tree never enter your dependency closure in the first place. And
-> avoid anything that deliberately stamps the exact commit into the output, like a NixOS config's
-> `system.nixos.revision` set from `self.rev` — that changes on every single commit by design, which
-> defeats the filter entirely.
+> `packages.<system>.default`) instead of something broad like all of nixpkgs, so doc and manual
+> updates elsewhere in the tree never enter your dependency closure. And avoid anything that
+> deliberately stamps the exact commit into the output, like a NixOS config's `system.nixos.revision`
+> set from `self.rev`. That changes on every commit by design, which defeats the filter entirely.
 
 ### Disk space
 
 Every flake input has to become an immutable, content-addressed store path before Nix can evaluate
-against it — that part isn't avoidable, and since each commit in the bisection genuinely has
-different content, the store path is genuinely different every time too. For a large repo like
-nixpkgs, bisecting even a few dozen commits can pile up tens of GB of store paths this way, and
-nothing dereferences any of them once the checkout moves on to the next commit — nothing reclaims
-that until whatever runs `nix store gc` next, which can be too late if a later step in the same job
-needs that disk.
+against it, and since each commit in the bisection genuinely has different content, the store path is
+different every time too. For a large repo like nixpkgs, bisecting even a few dozen commits can pile
+up tens of GB of store paths this way, and nothing reclaims that until whatever runs `nix store gc`
+next, which can be too late if a later step in the same job needs the disk.
 
-**Prefer `git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV` over `path:$CFLC_INPUT_PATH`.** This
-action always checks `CFLC_INPUT_PATH` out to the commit under test before running your command (so
-the needed blobs get fetched from the blobless clone's promisor remote — see below), but `path:`
-then has Nix separately re-read and re-hash that checked-out working tree from the filesystem to
-import it into the store. `git+file://...?rev=...` instead has Nix read the commit straight out of
-the repository's already-populated object database, skipping that redundant filesystem pass:
+**Prefer `git+file://$CFLC_INPUT_PATH?rev=$CFLC_INPUT_REV` over `path:$CFLC_INPUT_PATH`.** This action
+always checks `CFLC_INPUT_PATH` out to the commit under test before running your command, so the
+needed blobs are fetched from the repo's promisor remote at that point. `path:` then makes Nix
+separately re-read and re-hash that checked-out tree from the filesystem to import it into the store;
+`git+file://...?rev=...` instead has Nix read the commit straight out of the repository's
+already-populated object database, skipping that redundant pass:
 
 ```yaml
 - uses: mdarocha/comment-flake-lock-changelog@main
@@ -145,23 +141,40 @@ the repository's already-populated object database, skipping that redundant file
 ```
 
 > [!NOTE]
-> Don't try to skip the internal `git checkout` yourself (e.g. by shallow-fetching only the specific
-> commit you need) to save even more disk. Nix's git fetcher is built on libgit2, which — unlike the
-> `git` CLI — doesn't understand partial-clone/promisor-remote metadata and can't lazily fetch a
-> missing blob on its own; it just fails with "object not found" if the blob was never fetched by
+> Don't try to skip the internal `git checkout` yourself (say, by shallow-fetching only the one
+> commit you need) to save even more disk. Nix's git fetcher is built on libgit2, which, unlike the
+> `git` CLI, doesn't understand partial-clone or promisor-remote metadata and can't lazily fetch a
+> missing blob on its own. It just fails with "object not found" if the blob was never fetched by
 > something else first. The internal checkout is what performs that fetch, via the real `git` CLI, so
 > `git+file://` can find what it needs.
 
 Either way, set `build-filter-gc: true` to run `nix store gc` after every build, bounding peak usage
 to roughly one checkout's worth instead of the whole bisection's. Only enable it if nothing else in
-the job depends on Nix store paths that aren't rooted yet at the point this action runs — a store
-path that was merely *restored* (from a build cache, say) isn't necessarily a GC root, so if this
-action runs after that restore, `build-filter-gc` can delete the very cache you just restored. Run
-this action **before** restoring any build cache in the job if you turn it on.
+the job depends on Nix store paths that aren't rooted yet at the point this action runs. A store path
+that was merely restored (from a build cache, say) isn't necessarily a GC root, so if this action runs
+after that restore, `build-filter-gc` can delete the cache you just restored. Run this action before
+restoring any build cache in the job if you turn it on.
+
+### Result caching
+
+Bisecting a range is expensive: a fetch plus a build per bisect step. So the action persists each
+input's bisection result in a GitHub Actions cache, keyed on everything that can change its outcome:
+the exact commit range and input name being tested, the `build-filter` command itself, and a hash of
+every `*.nix` file and `flake.lock` in your repo. A later run reuses the cached result whenever all of
+those are unchanged (re-running the action on the same PR after a comment edit, say) and re-bisects
+automatically the moment any of them changes. No configuration needed.
 
 ### Inputs that change together
 
-If a PR bumps more than one input, each input is tested independently, with every *other* input held
-at its new (post-update) version for the duration. In other words, testing `nixpkgs` always happens
-against the `flake-utils` version your PR is updating *to*, never the one it's updating *from* — so
-you're seeing the same build your flake will actually produce once the whole PR lands.
+If a PR bumps more than one input, each is tested independently, with every other input held at its
+new, post-update version for the duration. Testing `nixpkgs` always happens against the
+`flake-utils` version your PR is updating to, never the one it's updating from, so you're seeing the
+same build your flake will actually produce once the whole PR lands.
+
+## Dependabot
+
+Dependabot's own PR description already links each input's compare URL. When `build-filter` isn't set
+and those URLs are already present, the action skips commenting instead of repeating them. If
+`build-filter` is set, the action comments regardless: the relevant/irrelevant split is information
+dependabot's description doesn't have, so it's worth posting even when the raw compare links are
+redundant.

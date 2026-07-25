@@ -4,8 +4,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+    buildFilterCacheKey,
     clearCaches,
     compareCommits,
+    getCachedBuildFilterResult,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
     getPullRequestDetails,
@@ -13,6 +15,7 @@ import {
     getPullRequestRefs,
     restoreCacheForRepo,
     saveCacheForRepo,
+    setCachedBuildFilterResult,
     upsertComment,
 } from "~/api";
 import GetFileContentAtCommitQuery from "~/queries/GetFileContentAtCommit.graphql" with { type: "text" };
@@ -27,6 +30,7 @@ const COMMENT_TAG = "<!-- mdarocha/comment-flake-lock-changelog -->";
 
 let moduleMocks: Array<Awaited<ReturnType<typeof mockModule>>> = [];
 let logMock: Mock<(log: string) => void>;
+let infoMock: Mock<(log: string) => void>;
 let createCommentMock: Mock<(params: unknown) => Promise<void>>;
 let updateCommentMock: Mock<(params: unknown) => Promise<void>>;
 let existingCommentsList: Array<{ id: number; body: string }>;
@@ -274,12 +278,13 @@ beforeEach(async () => {
     };
 
     logMock = mock(() => {});
+    infoMock = mock(() => {});
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
             getInput: mock((input: string) => (input === "token" ? testToken : "")),
             warning: logMock,
-            info: mock(() => {}),
+            info: infoMock,
         })),
         await mockModule("@actions/github", () => ({
             getOctokit: mock((token: string) => (token === testToken ? mockOctokit : null)),
@@ -499,7 +504,10 @@ describe("compareCommits", () => {
         const commits = await compareCommits("test_owner", "test_repo", "base000", "head999");
 
         expect(commits.map((c) => c.sha)).toEqual(["e1", "e2", "e3", "e4", "e5"]);
-        expect(logMock).toHaveBeenCalledWith(expect.stringContaining("compare API returned 2 of 5 commits"));
+        // This is expected/routine (the compare API caps its commits array), not a
+        // problem, so it's logged via core.info rather than core.warning.
+        expect(infoMock).toHaveBeenCalledWith(expect.stringContaining("compare API returned 2 of 5 commits"));
+        expect(logMock).not.toHaveBeenCalled();
     });
 });
 
@@ -524,6 +532,48 @@ describe("getPullRequestForCommit", () => {
         await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
         await getPullRequestForCommit("test_owner", "test_repo", "no_pr_commit");
         expect(listPRsMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("buildFilterCacheKey / getCachedBuildFilterResult / setCachedBuildFilterResult", () => {
+    const diff = { beforeRev: "abc123", rev: "def456", name: "nixpkgs" };
+
+    test("cache is empty before anything is stored", () => {
+        const key = buildFilterCacheKey("hash1", "nix build", diff);
+        expect(getCachedBuildFilterResult(key)).toBeUndefined();
+    });
+
+    test("returns what was stored under the same key", () => {
+        const key = buildFilterCacheKey("hash1", "nix build", diff);
+        const result = { relevant: [{ sha: "s1", message: "m", url: "u" }], irrelevant: [] };
+        setCachedBuildFilterResult(key, result);
+        expect(getCachedBuildFilterResult(key)).toEqual(result);
+    });
+
+    test("differs when the nix state hash differs", () => {
+        expect(buildFilterCacheKey("hash1", "nix build", diff)).not.toBe(
+            buildFilterCacheKey("hash2", "nix build", diff),
+        );
+    });
+
+    test("differs when the build command differs", () => {
+        expect(buildFilterCacheKey("hash1", "nix build", diff)).not.toBe(
+            buildFilterCacheKey("hash1", "nix build --different-flag", diff),
+        );
+    });
+
+    test("differs when the commit range differs", () => {
+        const otherDiff = { ...diff, rev: "different-rev" };
+        expect(buildFilterCacheKey("hash1", "nix build", diff)).not.toBe(
+            buildFilterCacheKey("hash1", "nix build", otherDiff),
+        );
+    });
+
+    test("differs when the input name differs", () => {
+        const otherDiff = { ...diff, name: "home-manager" };
+        expect(buildFilterCacheKey("hash1", "nix build", diff)).not.toBe(
+            buildFilterCacheKey("hash1", "nix build", otherDiff),
+        );
     });
 });
 
@@ -611,5 +661,40 @@ describe("restoreCacheForRepo / saveCacheForRepo", () => {
 
         expect(commits).toEqual([{ sha: "cached-sha", message: "cached", url: "u" }]);
         expect(compareCommitsMock).not.toHaveBeenCalled();
+    });
+
+    test("saveCacheForRepo persists build-filter results, and restoreCacheForRepo loads them back", async () => {
+        const key = buildFilterCacheKey("some-nix-state-hash", "nix build", {
+            beforeRev: "abc123",
+            rev: "def456",
+            name: "nixpkgs",
+        });
+        const result = { relevant: [{ sha: "s1", message: "m", url: "u" }], irrelevant: [] };
+        setCachedBuildFilterResult(key, result);
+
+        await saveCacheForRepo("test_owner", "test_repo");
+        const written = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        expect(written.buildFilterResults[key]).toEqual(result);
+
+        // Simulate a fresh process: nothing in memory, restore from the saved file.
+        clearCaches();
+        restoreCacheMock.mockImplementation(async () => "some-previous-run-key");
+        await restoreCacheForRepo("test_owner", "test_repo");
+
+        expect(getCachedBuildFilterResult(key)).toEqual(result);
+    });
+
+    test("restoreCacheForRepo tolerates a cache file saved before buildFilterResults existed", async () => {
+        fs.writeFileSync(
+            filePath,
+            JSON.stringify({
+                compareCommits: {},
+                prForCommit: {},
+            }),
+            "utf8",
+        );
+        restoreCacheMock.mockImplementation(async () => "some-previous-run-key");
+
+        await expect(restoreCacheForRepo("test_owner", "test_repo")).resolves.toBeUndefined();
     });
 });

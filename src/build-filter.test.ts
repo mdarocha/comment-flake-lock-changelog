@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { mockModule } from "~/utils/mockModule";
 
 type SpawnCall = { cmd: string; args: string[]; env: NodeJS.ProcessEnv | undefined };
@@ -288,5 +291,119 @@ describe("filterCommitsByBuildRelevance gcBetweenBuilds", () => {
         } finally {
             coreMock.dispose();
         }
+    });
+});
+
+describe("computeNixStateHash", () => {
+    let tmpDir: string;
+
+    beforeEach(async () => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cflc-nix-state-"));
+        const { resetNixStateHashCache } = await import("~/buildFilter");
+        resetNixStateHashCache();
+    });
+
+    afterEach(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    test("is stable across calls against the same tree", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+        fs.writeFileSync(path.join(tmpDir, "flake.lock"), "{}");
+
+        const { computeNixStateHash } = await import("~/buildFilter");
+        const first = computeNixStateHash(tmpDir);
+        const second = computeNixStateHash(tmpDir);
+
+        expect(first).toBe(second);
+    });
+
+    test("changes when a .nix file's content changes", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+        fs.writeFileSync(path.join(tmpDir, "flake.lock"), "{}");
+
+        const { computeNixStateHash, resetNixStateHashCache } = await import("~/buildFilter");
+        const before = computeNixStateHash(tmpDir);
+
+        resetNixStateHashCache();
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ changed = true; }");
+        const after = computeNixStateHash(tmpDir);
+
+        expect(after).not.toBe(before);
+    });
+
+    test("changes when flake.lock content changes", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+        fs.writeFileSync(path.join(tmpDir, "flake.lock"), '{"nodes":{}}');
+
+        const { computeNixStateHash, resetNixStateHashCache } = await import("~/buildFilter");
+        const before = computeNixStateHash(tmpDir);
+
+        resetNixStateHashCache();
+        fs.writeFileSync(path.join(tmpDir, "flake.lock"), '{"nodes":{"a":1}}');
+        const after = computeNixStateHash(tmpDir);
+
+        expect(after).not.toBe(before);
+    });
+
+    test("ignores files that are neither *.nix nor flake.lock", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+        fs.writeFileSync(path.join(tmpDir, "flake.lock"), "{}");
+        fs.writeFileSync(path.join(tmpDir, "README.md"), "some docs");
+
+        const { computeNixStateHash, resetNixStateHashCache } = await import("~/buildFilter");
+        const before = computeNixStateHash(tmpDir);
+
+        resetNixStateHashCache();
+        fs.writeFileSync(path.join(tmpDir, "README.md"), "different docs");
+        const after = computeNixStateHash(tmpDir);
+
+        expect(after).toBe(before);
+    });
+
+    test("skips ignored directories such as .git and node_modules", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+        fs.mkdirSync(path.join(tmpDir, ".git"));
+        fs.writeFileSync(path.join(tmpDir, ".git", "config.nix"), "should be ignored");
+        fs.mkdirSync(path.join(tmpDir, "node_modules"));
+        fs.writeFileSync(path.join(tmpDir, "node_modules", "pkg.nix"), "should be ignored");
+
+        const { computeNixStateHash, resetNixStateHashCache } = await import("~/buildFilter");
+        const withIgnored = computeNixStateHash(tmpDir);
+
+        resetNixStateHashCache();
+        fs.rmSync(path.join(tmpDir, ".git"), { recursive: true, force: true });
+        fs.rmSync(path.join(tmpDir, "node_modules"), { recursive: true, force: true });
+        const withoutIgnored = computeNixStateHash(tmpDir);
+
+        expect(withIgnored).toBe(withoutIgnored);
+    });
+
+    test("finds .nix files in nested subdirectories", async () => {
+        fs.mkdirSync(path.join(tmpDir, "modules"));
+        fs.writeFileSync(path.join(tmpDir, "modules", "nested.nix"), "{ }");
+
+        const { computeNixStateHash, resetNixStateHashCache } = await import("~/buildFilter");
+        const before = computeNixStateHash(tmpDir);
+
+        resetNixStateHashCache();
+        fs.writeFileSync(path.join(tmpDir, "modules", "nested.nix"), "{ changed = true; }");
+        const after = computeNixStateHash(tmpDir);
+
+        expect(after).not.toBe(before);
+    });
+
+    test("memoizes: a second call does not re-read the filesystem", async () => {
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ }");
+
+        const { computeNixStateHash } = await import("~/buildFilter");
+        const first = computeNixStateHash(tmpDir);
+
+        // Mutate the tree without resetting the memoized hash — the second call
+        // should still return the stale, memoized value rather than re-scanning.
+        fs.writeFileSync(path.join(tmpDir, "flake.nix"), "{ changed = true; }");
+        const second = computeNixStateHash(tmpDir);
+
+        expect(second).toBe(first);
     });
 });

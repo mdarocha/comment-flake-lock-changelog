@@ -1,6 +1,7 @@
 import * as core from "@actions/core";
 import * as fs from "fs";
 import { spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as os from "os";
 import * as path from "path";
 
@@ -41,6 +42,61 @@ function spawnCmd(
 
 function isGitAvailable(): boolean {
     return spawnCmd(["git", "--version"]).exitCode === 0;
+}
+
+const NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
+
+function collectNixStateFiles(dir: string, root: string, out: string[]): void {
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (NIX_STATE_IGNORED_DIRS.has(entry.name)) {
+            continue;
+        }
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            collectNixStateFiles(fullPath, root, out);
+        } else if (entry.isFile() && (entry.name.endsWith(".nix") || entry.name === "flake.lock")) {
+            out.push(path.relative(root, fullPath));
+        }
+    }
+}
+
+let cachedNixStateHash: string | undefined;
+
+/**
+ * Hash of every `*.nix` file and `flake.lock` under `cwd` — the complete set of
+ * inputs (besides the input being bisected itself) that can change what the
+ * build command evaluates. Used as part of the build-filter result cache key in
+ * main.ts: a cached bisection result is only reusable while none of these files
+ * have changed since it was computed. Memoized per process since these files
+ * don't change mid-run; call resetNixStateHashCache() in tests that need a fresh
+ * read.
+ */
+export function computeNixStateHash(cwd: string = process.cwd()): string {
+    if (cachedNixStateHash !== undefined) {
+        return cachedNixStateHash;
+    }
+    const files: string[] = [];
+    collectNixStateFiles(cwd, cwd, files);
+    files.sort();
+    const hash = crypto.createHash("sha256");
+    for (const relPath of files) {
+        hash.update(relPath);
+        hash.update("\0");
+        hash.update(fs.readFileSync(path.join(cwd, relPath)));
+        hash.update("\0");
+    }
+    cachedNixStateHash = hash.digest("hex");
+    return cachedNixStateHash;
+}
+
+export function resetNixStateHashCache(): void {
+    cachedNixStateHash = undefined;
 }
 
 /**
@@ -95,13 +151,15 @@ function bisect(
 /**
  * Filter commits by whether they affect the build output.
  *
- * The upstream repo is cloned and checked out at various commits. For each build,
- * the user-provided build command is run as-is in process.cwd() (the Actions workspace)
- * with CFLC_INPUT_NAME set to the flake input's name, CFLC_INPUT_PATH set to the
- * upstream checkout, and CFLC_INPUT_REV set to the SHA. CFLC_INPUT_NAME lets a single
- * build command handle whichever input is currently being bisected (e.g.
- * `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`), instead of hardcoding
- * one input name. The command's stdout is used as the build fingerprint.
+ * The upstream repo is cloned (blobless: tree metadata only, blobs fetched on demand
+ * during checkout) and checked out at various commits. For each build, the
+ * user-provided build command is run as-is in process.cwd() (the Actions workspace)
+ * with CFLC_INPUT_NAME set to the flake input's name,
+ * CFLC_INPUT_PATH set to the upstream checkout, and CFLC_INPUT_REV set to the SHA.
+ * CFLC_INPUT_NAME lets a single build command handle whichever input is currently
+ * being bisected (e.g. `--override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"`),
+ * instead of hardcoding one input name. The command's stdout is used as the build
+ * fingerprint.
  *
  * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
  * k = number of output change points, instead of O(N) for a linear scan.
@@ -134,13 +192,6 @@ export function filterCommitsByBuildRelevance(
         const repoPath = path.join(tmpDir, "repo");
         const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
 
-        core.info(`build-filter: cloning ${repoUrl}`);
-        // Blobless clone: fetch tree metadata only; blobs are fetched on demand during checkout.
-        const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
-        if (cloneResult.exitCode !== 0) {
-            throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
-        }
-
         // allShas[0] = beforeRev, allShas[1..N] = commits[0..N-1].sha. The final element
         // is always diff.rev (the actual head of the range) rather than commits[N-1].sha:
         // compareCommits' underlying API caps how many commits it returns per call, so if
@@ -151,6 +202,19 @@ export function filterCommitsByBuildRelevance(
             lastCommitSha === diff.rev
                 ? [diff.beforeRev, ...commits.map((c) => c.sha)]
                 : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
+
+        // Blobless clone: fetch tree metadata only; blobs are fetched on demand during
+        // checkout. Deliberately a full clone, not a partial/shallow fetch of just the
+        // commits in this range: a git-init-plus-per-commit-fetch repo (no branches, no
+        // full ref graph) has twice now made Nix's git+file fetcher fail against it in
+        // real testing, so this sticks with the one approach that's actually held up —
+        // same lesson as build-filter-skip-checkout, reverted for a related reason (see
+        // the README's 'Disk space' section).
+        core.info(`build-filter: cloning ${repoUrl}`);
+        const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
+        if (cloneResult.exitCode !== 0) {
+            throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
+        }
 
         const cmdParts = ["sh", "-c", buildCommand];
 

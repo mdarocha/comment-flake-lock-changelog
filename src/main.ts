@@ -2,7 +2,9 @@ import * as core from "@actions/core";
 import {
     COMMENT_TAG_PATTERN,
     GITHUB_COMMENT_MAX_LENGTH,
+    buildFilterCacheKey,
     compareCommits,
+    getCachedBuildFilterResult,
     getFileContentAtCommit,
     getPullRequestChangedFiles,
     getPullRequestDetails,
@@ -10,9 +12,10 @@ import {
     getPullRequestRefs,
     restoreCacheForRepo,
     saveCacheForRepo,
+    setCachedBuildFilterResult,
     upsertComment,
 } from "~/api";
-import { filterCommitsByBuildRelevance } from "~/buildFilter";
+import { computeNixStateHash, filterCommitsByBuildRelevance } from "~/buildFilter";
 
 interface LockfileItem {
     type: string;
@@ -252,8 +255,11 @@ export async function run(): Promise<void> {
         allDiffsByLockfile.push({ lockfile, diffs });
     }
 
-    // Dependabot skip check: if all compare URLs already appear in the PR body, no comment needed
-    if (prDetails.authorLogin === "dependabot[bot]") {
+    // Dependabot skip check: if all compare URLs already appear in the PR body, no comment
+    // needed — but only when build-filter is unset. With build-filter on, this action's
+    // comment carries the relevant/irrelevant split, which dependabot's own description
+    // never has, so it stays worth posting even when the raw compare URLs are redundant.
+    if (!buildFilter && prDetails.authorLogin === "dependabot[bot]") {
         const allCompareUrls = allDiffsByLockfile.flatMap(({ diffs }) =>
             diffs.map((d) => `https://github.com/${d.owner}/${d.repo}/compare/${d.beforeRev}..${d.rev}`),
         );
@@ -287,15 +293,28 @@ export async function run(): Promise<void> {
             let irrelevant: Commit[] = [];
 
             if (buildFilter && commits.length > 0) {
-                core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
-                try {
-                    const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-                        gcBetweenBuilds: buildFilterGc,
-                    });
-                    relevant = filtered.relevant;
-                    irrelevant = filtered.irrelevant;
-                } catch (e) {
-                    core.warning(`build-filter failed: ${e}. Showing all commits.`);
+                // Bisecting is a clone plus a build per bisect step — expensive enough that
+                // it's worth skipping entirely when nothing that could change the outcome
+                // (this repo's *.nix/flake.lock state, the build command, or the commit
+                // range itself) has changed since a previous run computed it.
+                const cacheKey = buildFilterCacheKey(computeNixStateHash(), buildFilter, diff);
+                const cachedResult = getCachedBuildFilterResult(cacheKey);
+                if (cachedResult) {
+                    core.info(`build-filter: ${diff.owner}/${diff.repo} — cache hit, skipping bisection`);
+                    relevant = cachedResult.relevant;
+                    irrelevant = cachedResult.irrelevant;
+                } else {
+                    core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
+                    try {
+                        const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+                            gcBetweenBuilds: buildFilterGc,
+                        });
+                        relevant = filtered.relevant;
+                        irrelevant = filtered.irrelevant;
+                        setCachedBuildFilterResult(cacheKey, filtered);
+                    } catch (e) {
+                        core.warning(`build-filter failed: ${e}. Showing all commits.`);
+                    }
                 }
             }
 
@@ -374,7 +393,9 @@ export async function run(): Promise<void> {
 
             for (let i = 1; i < relevant.length; i++) {
                 const commit = relevant[i];
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                if (core.isDebug()) {
+                    core.debug(`Checking for PRs associated with commit ${commit.sha}`);
+                }
                 const line = await buildCommitLine(diff, commit);
 
                 if (line.length + 1 > discretionaryBudget) {
@@ -395,7 +416,9 @@ export async function run(): Promise<void> {
             let omittedIrrelevant = 0;
             for (let i = 0; i < irrelevant.length; i++) {
                 const commit = irrelevant[i];
-                core.info(`Checking for PRs associated with commit ${commit.sha}`);
+                if (core.isDebug()) {
+                    core.debug(`Checking for PRs associated with commit ${commit.sha}`);
+                }
                 const line = await buildCommitLine(diff, commit);
 
                 if (line.length + 1 > discretionaryBudget) {
