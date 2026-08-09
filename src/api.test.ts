@@ -237,6 +237,11 @@ beforeEach(async () => {
                         if (owner === "test_owner" && repo === "test_repo" && basehead === "no_base...no_head") {
                             throw new Error("No common ancestor");
                         }
+                        if (owner === "test_owner" && repo === "test_repo" && basehead === "gone_base...gone_head") {
+                            const notFound = new Error("Not Found") as Error & { status: number };
+                            notFound.status = 404;
+                            throw notFound;
+                        }
                         if (owner === "test_owner" && repo === "test_repo" && basehead === "base000...head999") {
                             // Simulates GitHub's compare API commit cap: total_commits reports
                             // the true range size, but the commits array itself is truncated.
@@ -457,6 +462,12 @@ describe("compareCommits", () => {
         const commits = await compareCommits("test_owner", "test_repo", "no_base", "no_head");
         expect(commits).toEqual([]);
         expect(logMock).toHaveBeenCalled();
+    });
+
+    test("returns empty array on 404 (unreachable commit upstream)", async () => {
+        const commits = await compareCommits("test_owner", "test_repo", "gone_base", "gone_head");
+        expect(commits).toEqual([]);
+        expect(logMock).toHaveBeenCalledWith(expect.stringContaining("GitHub returned 404 comparing these commits"));
     });
 
     test("falls back to paginated listCommits when the compare API truncates the range", async () => {

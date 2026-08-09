@@ -66587,6 +66587,12 @@ async function compareCommits(owner, repo, base, head) {
       compareCommitsCache.set(cacheKey, empty);
       return empty;
     }
+    if (typeof error2 === "object" && error2 !== null && "status" in error2 && error2.status === 404) {
+      warning(`compareCommits: ${owner}/${repo}@${base}...${head} — GitHub returned 404 comparing these ` + "commits (one of them is likely unreachable upstream, e.g. garbage-collected or rewritten). " + "Skipping commit changelog for this input.");
+      const empty = [];
+      compareCommitsCache.set(cacheKey, empty);
+      return empty;
+    }
     throw error2;
   }
 }

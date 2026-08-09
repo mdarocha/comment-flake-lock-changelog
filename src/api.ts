@@ -235,6 +235,22 @@ export async function compareCommits(
             compareCommitsCache.set(cacheKey, empty);
             return empty;
         }
+        // GitHub 404s a commit comparison when either endpoint is unreachable from
+        // the API's perspective — most commonly an upstream flake input revision
+        // that was garbage-collected or rewritten away after the lockfile pinned
+        // it. That's routine for fast-moving inputs (nixpkgs-unstable, etc.), not
+        // an error in this action or the PR under test, so degrade to a warning
+        // and an empty changelog for this input rather than failing the whole run.
+        if (typeof error === "object" && error !== null && "status" in error && error.status === 404) {
+            core.warning(
+                `compareCommits: ${owner}/${repo}@${base}...${head} — GitHub returned 404 comparing these ` +
+                    "commits (one of them is likely unreachable upstream, e.g. garbage-collected or rewritten). " +
+                    "Skipping commit changelog for this input.",
+            );
+            const empty: Array<{ sha: string; message: string; url: string }> = [];
+            compareCommitsCache.set(cacheKey, empty);
+            return empty;
+        }
         throw error;
     }
 }
