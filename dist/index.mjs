@@ -21273,7 +21273,7 @@ var require_state_cjs = __commonJS((exports) => {
 var require_package = __commonJS((exports, module) => {
   module.exports = {
     name: "@actions/cache",
-    version: "6.1.0",
+    version: "6.2.0",
     description: "Actions cache lib",
     keywords: [
       "github",
@@ -27482,6 +27482,7 @@ var SystemTarPathOnWindows = `${process.env["SYSTEMDRIVE"]}\\Windows\\System32\\
 var TarFilename = "cache.tar";
 var ManifestFilename = "manifest.txt";
 var CacheFileSizeLimit = 10 * Math.pow(1024, 3);
+var CacheReadDeniedMessagePrefix = "cache read denied:";
 
 // node_modules/@actions/cache/lib/internal/cacheUtils.js
 var __awaiter8 = function(thisArg, _arguments, P, generator) {
@@ -61290,6 +61291,20 @@ function getCacheServiceVersion() {
     return "v1";
   return process.env["ACTIONS_CACHE_SERVICE_V2"] ? "v2" : "v1";
 }
+var KNOWN_CACHE_MODES = ["none", "read", "write", "write-only"];
+function getCacheMode() {
+  return (process.env["ACTIONS_CACHE_MODE"] || "").trim().toLowerCase();
+}
+function isCacheReadable(mode) {
+  if (!KNOWN_CACHE_MODES.includes(mode))
+    return true;
+  return mode === "read" || mode === "write";
+}
+function isCacheWritable(mode) {
+  if (!KNOWN_CACHE_MODES.includes(mode))
+    return true;
+  return mode === "write" || mode === "write-only";
+}
 function getCacheServiceURL() {
   const version2 = getCacheServiceVersion();
   switch (version2) {
@@ -61363,6 +61378,7 @@ function createHttpClient() {
 }
 function getCacheEntry(keys, paths, options) {
   return __awaiter14(this, undefined, undefined, function* () {
+    var _a;
     const httpClient = createHttpClient();
     const version3 = getCacheVersion(paths, options === null || options === undefined ? undefined : options.compressionMethod, options === null || options === undefined ? undefined : options.enableCrossOsArchive);
     const resource = `cache?keys=${encodeURIComponent(keys.join(","))}&version=${version3}`;
@@ -61376,6 +61392,10 @@ function getCacheEntry(keys, paths, options) {
       return null;
     }
     if (!isSuccessStatusCode(response.statusCode)) {
+      const errorMessage = (_a = response.error) === null || _a === undefined ? undefined : _a.message;
+      if (errorMessage === null || errorMessage === undefined ? undefined : errorMessage.includes(CacheReadDeniedMessagePrefix)) {
+        throw new Error(errorMessage);
+      }
       throw new Error(`Cache service responded with ${response.statusCode}`);
     }
     const cacheResult = response.result;
@@ -62488,6 +62508,15 @@ class CacheWriteDeniedError extends ReserveCacheError {
     Object.setPrototypeOf(this, CacheWriteDeniedError.prototype);
   }
 }
+var CACHE_READ_DENIED_PREFIX = CacheReadDeniedMessagePrefix;
+
+class CacheReadDeniedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CacheReadDeniedError";
+    Object.setPrototypeOf(this, CacheReadDeniedError.prototype);
+  }
+}
 
 class FinalizeCacheError extends Error {
   constructor(message) {
@@ -62515,6 +62544,12 @@ function restoreCache(paths_1, primaryKey_1, restoreKeys_1, options_1) {
     const cacheServiceVersion = getCacheServiceVersion();
     debug(`Cache service version: ${cacheServiceVersion}`);
     checkPaths(paths);
+    const cacheMode = getCacheMode();
+    if (!isCacheReadable(cacheMode)) {
+      info(`Cache restore skipped: the effective cache-mode '${cacheMode}' does not permit reads.`);
+      debug(`Skipped restore for paths [${paths.join(", ")}] with primary key '${primaryKey}'.`);
+      return;
+    }
     switch (cacheServiceVersion) {
       case "v2":
         return yield restoreCacheV2(paths, primaryKey, restoreKeys, options, enableCrossOsArchive);
@@ -62526,6 +62561,7 @@ function restoreCache(paths_1, primaryKey_1, restoreKeys_1, options_1) {
 }
 function restoreCacheV1(paths_1, primaryKey_1, restoreKeys_1, options_1) {
   return __awaiter17(this, arguments, undefined, function* (paths, primaryKey, restoreKeys, options, enableCrossOsArchive = false) {
+    var _a;
     restoreKeys = restoreKeys || [];
     const keys = [primaryKey, ...restoreKeys];
     debug("Resolved Keys:");
@@ -62539,10 +62575,19 @@ function restoreCacheV1(paths_1, primaryKey_1, restoreKeys_1, options_1) {
     const compressionMethod = yield getCompressionMethod();
     let archivePath = "";
     try {
-      const cacheEntry = yield getCacheEntry(keys, paths, {
-        compressionMethod,
-        enableCrossOsArchive
-      });
+      let cacheEntry;
+      try {
+        cacheEntry = yield getCacheEntry(keys, paths, {
+          compressionMethod,
+          enableCrossOsArchive
+        });
+      } catch (error2) {
+        const errorMessage = (_a = error2 === null || error2 === undefined ? undefined : error2.message) !== null && _a !== undefined ? _a : "";
+        if (errorMessage.includes(CACHE_READ_DENIED_PREFIX)) {
+          throw new CacheReadDeniedError(errorMessage);
+        }
+        throw error2;
+      }
       if (!(cacheEntry === null || cacheEntry === undefined ? undefined : cacheEntry.archiveLocation)) {
         return;
       }
@@ -62584,6 +62629,7 @@ function restoreCacheV1(paths_1, primaryKey_1, restoreKeys_1, options_1) {
 }
 function restoreCacheV2(paths_1, primaryKey_1, restoreKeys_1, options_1) {
   return __awaiter17(this, arguments, undefined, function* (paths, primaryKey, restoreKeys, options, enableCrossOsArchive = false) {
+    var _a;
     options = Object.assign(Object.assign({}, options), { useAzureSdk: true });
     restoreKeys = restoreKeys || [];
     const keys = [primaryKey, ...restoreKeys];
@@ -62604,7 +62650,16 @@ function restoreCacheV2(paths_1, primaryKey_1, restoreKeys_1, options_1) {
         restoreKeys,
         version: getCacheVersion(paths, compressionMethod, enableCrossOsArchive)
       };
-      const response = yield twirpClient.GetCacheEntryDownloadURL(request);
+      let response;
+      try {
+        response = yield twirpClient.GetCacheEntryDownloadURL(request);
+      } catch (error2) {
+        const errorMessage = (_a = error2 === null || error2 === undefined ? undefined : error2.message) !== null && _a !== undefined ? _a : "";
+        if (errorMessage.includes(CACHE_READ_DENIED_PREFIX)) {
+          throw new CacheReadDeniedError(errorMessage);
+        }
+        throw error2;
+      }
       if (!response.ok) {
         debug(`Cache not found for version ${request.version} of keys: ${keys.join(", ")}`);
         return;
@@ -62660,6 +62715,12 @@ function saveCache2(paths_1, key_1, options_1) {
     debug(`Cache service version: ${cacheServiceVersion}`);
     checkPaths(paths);
     checkKey(key);
+    const cacheMode = getCacheMode();
+    if (!isCacheWritable(cacheMode)) {
+      info(`Cache save skipped: the effective cache-mode '${cacheMode}' does not permit writes.`);
+      debug(`Skipped save for paths [${paths.join(", ")}] with key '${key}'.`);
+      return -1;
+    }
     switch (cacheServiceVersion) {
       case "v2":
         return yield saveCacheV2(paths, key, options, enableCrossOsArchive);
@@ -62717,8 +62778,6 @@ function saveCacheV1(paths_1, key_1, options_1) {
       const typedError = error2;
       if (typedError.name === ValidationError.name) {
         throw error2;
-      } else if (typedError.name === CacheWriteDeniedError.name) {
-        warning(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === ReserveCacheError.name) {
         info(`Failed to save: ${typedError.message}`);
       } else {
@@ -62806,8 +62865,6 @@ function saveCacheV2(paths_1, key_1, options_1) {
       const typedError = error2;
       if (typedError.name === ValidationError.name) {
         throw error2;
-      } else if (typedError.name === CacheWriteDeniedError.name) {
-        warning(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === ReserveCacheError.name) {
         info(`Failed to save: ${typedError.message}`);
       } else if (typedError.name === FinalizeCacheError.name) {
