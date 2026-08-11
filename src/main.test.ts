@@ -36,6 +36,7 @@ let filterCommitsByBuildRelevanceMock: Mock<any>;
 let getCachedBuildFilterResultMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let setCachedBuildFilterResultMock: Mock<any>;
+let restoreCacheForRepoMock: Mock<(owner: string, repo: string) => Promise<void>>;
 
 beforeEach(async () => {
     upsertCommentMock = mock(async () => {});
@@ -57,6 +58,7 @@ beforeEach(async () => {
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
     getCachedBuildFilterResultMock = mock(() => undefined);
     setCachedBuildFilterResultMock = mock(() => {});
+    restoreCacheForRepoMock = mock(async () => {});
 
     moduleMocks = [
         await mockModule("@actions/core", () => ({
@@ -79,7 +81,7 @@ beforeEach(async () => {
             compareCommits: compareCommitsMock,
             getPullRequestForCommit: mock(async () => null),
             upsertComment: upsertCommentMock,
-            restoreCacheForRepo: mock(async () => {}),
+            restoreCacheForRepo: restoreCacheForRepoMock,
             saveCacheForRepo: mock(async () => {}),
             buildFilterCacheKey: mock(
                 (nixStateHash: string, buildCommand: string, diff: { beforeRev: string; rev: string; name: string }) =>
@@ -223,6 +225,38 @@ describe("run", () => {
         expect(body).toContain("commit 0 in flake-utils");
         expect((body.match(/more commit\(s\) were not shown/g) ?? []).length).toBeGreaterThanOrEqual(1);
         expect(body.length).toBeLessThan(65536);
+    });
+
+    test("restores a repo's cache only once even when two inputs point at the same repo", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+
+        const BEFORE_SAME_REPO = JSON.stringify({
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs", "nixpkgs-unstable": "nixpkgs-unstable" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "aaaa1111", type: "github" } },
+                "nixpkgs-unstable": { locked: { owner: "NixOS", repo: "nixpkgs", rev: "cccc3333", type: "github" } },
+            },
+        });
+        const AFTER_SAME_REPO = JSON.stringify({
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs", "nixpkgs-unstable": "nixpkgs-unstable" } },
+                nixpkgs: { locked: { owner: "NixOS", repo: "nixpkgs", rev: "bbbb2222", type: "github" } },
+                "nixpkgs-unstable": { locked: { owner: "NixOS", repo: "nixpkgs", rev: "dddd4444", type: "github" } },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string, _path: string) =>
+            commit === "basesha" ? BEFORE_SAME_REPO : AFTER_SAME_REPO,
+        );
+
+        // dynamic import required: same reason as above.
+        const { run } = await import("~/main");
+        await run();
+
+        expect(restoreCacheForRepoMock).toHaveBeenCalledTimes(1);
+        expect(restoreCacheForRepoMock).toHaveBeenCalledWith("NixOS", "nixpkgs");
     });
 
     test("never logs a per-commit PR-lookup line via core.info, even over a large irrelevant list", async () => {

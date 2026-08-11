@@ -283,10 +283,21 @@ export async function run(): Promise<void> {
     }
     const gathered: GatheredDiff[] = [];
 
+    // Multiple inputs (or multiple lockfiles) can point at the same upstream repo in
+    // one PR — e.g. both a "nixpkgs" and "nixpkgs-unstable" input, or the same input
+    // bumped in two flake.lock files. Restoring the same repo's cache twice in one run
+    // wastes a network round trip and risks the second restore clobbering entries this
+    // run already computed with a stale snapshot from before this run started.
+    const restoredRepos = new Set<string>();
+
     for (const { lockfile, diffs } of allDiffsByLockfile) {
         for (const diff of diffs) {
             core.info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
-            await restoreCacheForRepo(diff.owner, diff.repo);
+            const repoKey = `${diff.owner}/${diff.repo}`;
+            if (!restoredRepos.has(repoKey)) {
+                restoredRepos.add(repoKey);
+                await restoreCacheForRepo(diff.owner, diff.repo);
+            }
             const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
 
             let relevant = commits;

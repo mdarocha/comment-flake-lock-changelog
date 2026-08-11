@@ -67129,10 +67129,15 @@ ${COMMENT_TAG_PATTERN}`.length;
     }
   }
   const gathered = [];
+  const restoredRepos = new Set;
   for (const { lockfile, diffs } of allDiffsByLockfile) {
     for (const diff of diffs) {
       info(`Checking ${diff.owner}/${diff.repo} ${diff.beforeRev} -> ${diff.rev}`);
-      await restoreCacheForRepo(diff.owner, diff.repo);
+      const repoKey = `${diff.owner}/${diff.repo}`;
+      if (!restoredRepos.has(repoKey)) {
+        restoredRepos.add(repoKey);
+        await restoreCacheForRepo(diff.owner, diff.repo);
+      }
       const commits = await compareCommits(diff.owner, diff.repo, diff.beforeRev, diff.rev);
       let relevant = commits;
       let irrelevant = [];

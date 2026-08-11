@@ -376,19 +376,12 @@ interface CacheFile {
     buildFilterResults: Record<string, BuildFilterResult>;
 }
 
-// GitHub Actions caches are immutable per exact key within a scope (branch):
-// once a key exists, every later attempt to save to that same key fails. A bare,
-// unversioned prefix as the literal key (the previous approach here) meant the
-// very first successful save on a branch permanently "froze" the cache — every
-// later run on that branch restored that same first snapshot but silently failed
-// to persist anything newer (the failure only ever surfaced via a hidden
-// core.debug call), and every *different* branch (the common case: a fresh
-// per-bump PR from update-flake-lock, this action's own documented example) never
-// matched the exact key at all, so it never benefited from caching in the first
-// place. Save under a key suffixed with the run/attempt (always unique, so the
-// save always succeeds) and restore via a prefix match on the stable prefix (so a
-// later run still finds the most recent save regardless of its exact suffix) —
-// the same primary-key + restore-prefix split cache-nix-action itself uses.
+// GitHub Actions cache keys are immutable per exact match within a branch scope: once a
+// key exists, every later save to it silently fails. Save under a key suffixed with the
+// run and attempt number (always unique, so the save always succeeds) and restore via a
+// prefix match against the stable prefix (so a later run still finds the most recent save
+// regardless of its exact suffix) — the same primary-key + restore-prefix split
+// cache-nix-action itself uses.
 function getCachePrefix(owner: string, repo: string): string {
     return `comment-flake-lock-changelog-v1-${owner}-${repo}`;
 }

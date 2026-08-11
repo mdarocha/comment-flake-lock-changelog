@@ -204,12 +204,10 @@ export function filterCommitsByBuildRelevance(
                 : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
 
         // Blobless clone: fetch tree metadata only; blobs are fetched on demand during
-        // checkout. Deliberately a full clone, not a partial/shallow fetch of just the
-        // commits in this range: a git-init-plus-per-commit-fetch repo (no branches, no
-        // full ref graph) has twice now made Nix's git+file fetcher fail against it in
-        // real testing, so this sticks with the one approach that's actually held up —
-        // same lesson as build-filter-skip-checkout, reverted for a related reason (see
-        // the README's 'Disk space' section).
+        // checkout. Deliberately a full clone, not a partial fetch of just the commits in
+        // this range — a git-init-plus-per-commit-fetch repo (no branches, no full ref
+        // graph) makes Nix's git+file fetcher fail against it. See the README's 'Disk
+        // space' section for the disk-usage tradeoffs this implies.
         core.info(`build-filter: cloning ${repoUrl}`);
         const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
         if (cloneResult.exitCode !== 0) {
