@@ -2,6 +2,7 @@ import * as core from "@actions/core";
 import * as fs from "fs";
 import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
+import * as os from "node:os";
 import * as path from "path";
 
 const LOG_FINGERPRINT_MAX_LENGTH = 200;
@@ -16,14 +17,28 @@ function truncateForLog(value: string, maxLength = LOG_FINGERPRINT_MAX_LENGTH): 
 type Commit = { sha: string; message: string; url: string };
 
 interface Diff {
+    // Only "github" and "git" ever reach this action's diffable pipeline (see
+    // main.ts's toLockfile) — every other flake.lock locked type (tarball, path,
+    // indirect, mercurial, or a git remote hosted anywhere but github.com) has no
+    // commit-comparison endpoint this action can call at all, so it never produces a
+    // Diff in the first place. buildInputFlakeRef below branches on this to build the
+    // correct override syntax for whichever of the two it is.
+    type: "github" | "git";
     owner: string;
     repo: string;
     beforeRev: string;
     rev: string;
-    // Subdirectory flake and GitHub Enterprise host, when the locked node has them —
-    // both feed into buildGithubFlakeRef's CFLC_INPUT below.
+    // Subdirectory flake, when the locked node has one — feeds into buildInputFlakeRef's
+    // CFLC_INPUT below for either type.
     dir?: string;
+    // "github" type only: a non-default (GitHub Enterprise) host.
     host?: string;
+    // "git" type only: whether the locked node fetches submodules. github: has no
+    // submodule support at all (it fetches via GitHub's tarball API, which never
+    // includes submodule content), so a git-type override must go through git+https
+    // rather than being coalesced into github: when this is set — silently dropping
+    // it would desync CFLC_INPUT's content from what flake.lock actually pins.
+    submodules?: boolean;
 }
 
 function spawnCmd(
@@ -91,6 +106,26 @@ class Semaphore {
     }
 }
 
+// Cap on auto-detected concurrency, independent of CPU count: each concurrent
+// build fetches and imports its own revision into the Nix store, so beyond a
+// handful in flight the marginal wall-clock win from more parallelism is
+// outweighed by peak disk usage and GitHub API/CDN request pressure — this bounds
+// that regardless of how many cores a large (including self-hosted) runner reports.
+const MAX_AUTO_CONCURRENCY = 8;
+
+/**
+ * Picks a default build concurrency when the caller doesn't specify one: the
+ * number of CPUs available to this process. Prefers `os.availableParallelism()`
+ * over `os.cpus().length` — unlike the latter, it respects container/cgroup CPU
+ * quotas, which matters on containerized self-hosted runners where the host may
+ * report far more cores than the job actually gets. Clamped to at least 1 and at
+ * most MAX_AUTO_CONCURRENCY.
+ */
+function detectConcurrency(): number {
+    const available = os.availableParallelism?.() ?? os.cpus().length;
+    return Math.max(1, Math.min(available || 1, MAX_AUTO_CONCURRENCY));
+}
+
 const NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
 
 function collectNixStateFiles(dir: string, root: string, out: string[]): void {
@@ -147,19 +182,19 @@ export function resetNixStateHashCache(): void {
 }
 
 /**
- * Every build overrides its input with a `github:owner/repo/rev` reference (see
- * buildGithubFlakeRef), and each distinct revision Nix fetches that way becomes its
- * own content-addressed store path. Nothing dereferences a previous commit's copy
- * once a build moves on to the next one, so on a large repo (nixpkgs is a few
- * hundred MB to a couple GB depending on what's already substituted) a bisection
- * touching a few dozen commits can pile up tens of GB of dead store paths that
- * nothing ever reclaims until whatever runs `nix store gc` next — which may be too
- * late if a later step in the same job needs that disk. To avoid that, this always
- * runs right after every build, bounding peak usage to roughly one fetched
- * revision's worth per concurrent build in flight instead of the whole bisection's.
- * Safe to call from multiple concurrent builds: `nix store gc` doesn't need any
- * extra synchronization of its own — Nix's locking already handles running it
- * alongside other Nix operations.
+ * Every build overrides its input with a flake reference for the commit under
+ * test (see buildInputFlakeRef), and each distinct revision Nix fetches that way
+ * becomes its own content-addressed store path. Nothing dereferences a previous
+ * commit's copy once a build moves on to the next one, so on a large repo
+ * (nixpkgs is a few hundred MB to a couple GB depending on what's already
+ * substituted) a bisection touching a few dozen commits can pile up tens of GB of
+ * dead store paths that nothing ever reclaims until whatever runs `nix store gc`
+ * next — which may be too late if a later step in the same job needs that disk.
+ * To avoid that, this always runs right after every build, bounding peak usage to
+ * roughly one fetched revision's worth per concurrent build in flight instead of
+ * the whole bisection's. Safe to call from multiple concurrent builds:
+ * `nix store gc` doesn't need any extra synchronization of its own — Nix's
+ * locking already handles running it alongside other Nix operations.
  */
 async function collectGarbage(): Promise<void> {
     const result = await spawnCmd(["nix", "store", "gc"]);
@@ -203,13 +238,31 @@ async function bisect(
 }
 
 /**
- * Builds the `github:owner/repo/rev` flake reference used to override an input for
- * a given commit under test (`CFLC_INPUT`): Nix's own `github:` fetcher pulls
- * straight from GitHub's tarball API/CDN, so builds never need a local checkout of
- * any kind. `dir`/`host` cover subdirectory flakes and GitHub Enterprise, appended
- * as `?host=...` and/or `&dir=...` (URL-encoded) when the locked node set them.
+ * Builds the flake reference used to override an input for a given commit under
+ * test (`CFLC_INPUT`), matching whichever locked type the input actually has:
+ *
+ * - `"github"`: `github:owner/repo/rev`, with `?host=`/`&dir=` appended
+ *   (URL-encoded) for GitHub Enterprise / subdirectory flakes. Nix's own
+ *   `github:` fetcher pulls straight from GitHub's tarball API/CDN — no local
+ *   checkout, and no submodule support.
+ * - `"git"`: `git+https://github.com/owner/repo?rev=sha`, with `&dir=`/
+ *   `&submodules=1` appended when set. Always uses `https://` regardless of the
+ *   locked node's original scheme — `ssh://` would need runner-side key auth this
+ *   action has no way to provide — which is safe because a `"git"`-typed `Diff`
+ *   is only ever constructed for github.com-hosted git remotes (see main.ts's
+ *   `toLockfile`).
  */
-function buildGithubFlakeRef(diff: Diff, sha: string): string {
+function buildInputFlakeRef(diff: Diff, sha: string): string {
+    if (diff.type === "git") {
+        const params = [`rev=${encodeURIComponent(sha)}`];
+        if (diff.dir !== undefined) {
+            params.push(`dir=${encodeURIComponent(diff.dir)}`);
+        }
+        if (diff.submodules === true) {
+            params.push("submodules=1");
+        }
+        return `git+https://github.com/${diff.owner}/${diff.repo}?${params.join("&")}`;
+    }
     const params: string[] = [];
     if (diff.host !== undefined) {
         params.push(`host=${encodeURIComponent(diff.host)}`);
@@ -225,14 +278,15 @@ function buildGithubFlakeRef(diff: Diff, sha: string): string {
  * Filter commits by whether they affect the build output.
  *
  * Each build runs the user-provided build command with a single environment
- * variable, `CFLC_INPUT` — a `github:owner/repo/rev` flake reference for the commit
- * under test (see buildGithubFlakeRef) — for example:
- * `nix build --override-input nixpkgs "$CFLC_INPUT"`. Nix's own `github:` fetcher
- * pulls the revision straight from GitHub's tarball API/CDN, so no local git clone
- * or checkout of any kind happens here; builds only ever touch the filesystem via
- * whatever the build command itself does. The command's stdout is used as the build
- * fingerprint. `nix store gc` always runs right after each build finishes, to
- * reclaim disk before starting more work (see collectGarbage's doc comment).
+ * variable, `CFLC_INPUT` — a flake reference for the commit under test, correct
+ * for whichever locked type the input actually has (see buildInputFlakeRef) — for
+ * example: `nix build --override-input nixpkgs "$CFLC_INPUT"`. Every supported
+ * type is fetched by Nix's own fetchers directly from the upstream host, so no
+ * local git clone or checkout of any kind happens here; builds only ever touch
+ * the filesystem via whatever the build command itself does. The command's
+ * stdout is used as the build fingerprint. `nix store gc` always runs right
+ * after each build finishes, to reclaim disk before starting more work (see
+ * collectGarbage's doc comment).
  *
  * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
  * k = number of output change points, instead of O(N) for a linear scan. The two
@@ -240,9 +294,11 @@ function buildGithubFlakeRef(diff: Diff, sha: string): string {
  * independent of each other and run concurrently, bounded by options.concurrency.
  *
  * @param options.concurrency - Maximum number of builds running at once. Defaults
- * to 1 (fully sequential). Higher values trade peak disk usage (each concurrent
- * build fetches and imports its own revision into the Nix store) for wall-clock
- * time on large bisections — see the README's 'Build filter' section.
+ * to an automatically detected value (see detectConcurrency) rather than a fixed
+ * number, since the right ceiling depends on the runner's own CPU count. Higher
+ * values trade peak disk usage (each concurrent build fetches and imports its own
+ * revision into the Nix store) for wall-clock time on large bisections — see the
+ * README's 'Build filter' section.
  */
 export async function filterCommitsByBuildRelevance(
     commits: Commit[],
@@ -267,7 +323,7 @@ export async function filterCommitsByBuildRelevance(
             : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
 
     const cmdParts = ["sh", "-c", buildCommand];
-    const semaphore = new Semaphore(options?.concurrency ?? 1);
+    const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
 
     const buildFn = async (sha: string): Promise<string> => {
         await semaphore.acquire();
@@ -277,7 +333,7 @@ export async function filterCommitsByBuildRelevance(
                 cwd: process.cwd(),
                 env: {
                     ...process.env,
-                    CFLC_INPUT: buildGithubFlakeRef(diff, sha),
+                    CFLC_INPUT: buildInputFlakeRef(diff, sha),
                 },
             });
             if (result.exitCode !== 0) {

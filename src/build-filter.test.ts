@@ -8,11 +8,16 @@ import { mockModule } from "~/utils/mockModule";
 type SpawnCall = { cmd: string; args: string[]; env: NodeJS.ProcessEnv | undefined };
 type FakeChild = EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
 
-// Extracts the sha from a `github:owner/repo/<sha>[?...]` CFLC_INPUT value — the
-// only env var a build receives now, so it's the only way to tell which build a
-// spawn call belongs to.
+// Extracts the sha from a CFLC_INPUT value — the only env var a build receives
+// now, so it's the only way to tell which build a spawn call belongs to. Handles
+// both locked types: `github:owner/repo/<sha>[?...]` and
+// `git+https://github.com/owner/repo?rev=<sha>[&...]`.
 function shaFromCflcInput(cflcInput: string | undefined): string {
-    return cflcInput?.match(/^github:[^/]+\/[^/]+\/([^?]+)/)?.[1] ?? "";
+    const githubMatch = cflcInput?.match(/^github:[^/]+\/[^/]+\/([^?]+)/);
+    if (githubMatch) {
+        return githubMatch[1];
+    }
+    return cflcInput?.match(/[?&]rev=([^&]+)/)?.[1] ?? "";
 }
 
 let spawnCalls: SpawnCall[] = [];
@@ -103,7 +108,7 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
+            { type: "github", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -125,7 +130,7 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
+            { type: "github", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
             'echo "$CFLC_INPUT"',
             { concurrency: 1 },
         );
@@ -154,7 +159,7 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "head" },
+            { type: "github", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "head" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -175,7 +180,7 @@ describe("filterCommitsByBuildRelevance", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -191,7 +196,7 @@ describe("filterCommitsByBuildRelevance CFLC_INPUT", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -212,6 +217,7 @@ describe("filterCommitsByBuildRelevance CFLC_INPUT", () => {
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
             {
+                type: "github",
                 owner: "acme",
                 repo: "flake-utils",
                 beforeRev: "before",
@@ -227,6 +233,66 @@ describe("filterCommitsByBuildRelevance CFLC_INPUT", () => {
     });
 });
 
+describe("filterCommitsByBuildRelevance git-type CFLC_INPUT", () => {
+    test("sets CFLC_INPUT to a git+https:// flake ref for every build", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-a" };
+
+        await filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { type: "git", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            'echo "$CFLC_INPUT"',
+        );
+
+        const buildCalls = spawnCalls.filter((c) => c.cmd === "sh");
+        expect(buildCalls.length).toBeGreaterThan(0);
+        expect(buildCalls.find((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "before")?.env?.["CFLC_INPUT"]).toBe(
+            "git+https://github.com/acme/flake-utils?rev=before",
+        );
+        expect(buildCalls.find((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "c1")?.env?.["CFLC_INPUT"]).toBe(
+            "git+https://github.com/acme/flake-utils?rev=c1",
+        );
+    });
+
+    test("includes &dir= and &submodules=1 when the diff's locked node has them", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-a" };
+
+        await filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            {
+                type: "git",
+                owner: "acme",
+                repo: "flake-utils",
+                beforeRev: "before",
+                rev: "c1",
+                dir: "sub dir",
+                submodules: true,
+            },
+            'echo "$CFLC_INPUT"',
+        );
+
+        const buildCall = spawnCalls.find((c) => c.cmd === "sh" && shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "c1");
+        expect(buildCall?.env?.["CFLC_INPUT"]).toBe(
+            "git+https://github.com/acme/flake-utils?rev=c1&dir=sub%20dir&submodules=1",
+        );
+    });
+
+    test("omits &submodules= when the locked node's submodules is false", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-a" };
+
+        await filterCommitsByBuildRelevance(
+            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+            { type: "git", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", submodules: false },
+            'echo "$CFLC_INPUT"',
+        );
+
+        const buildCall = spawnCalls.find((c) => c.cmd === "sh" && shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "c1");
+        expect(buildCall?.env?.["CFLC_INPUT"]).toBe("git+https://github.com/acme/flake-utils?rev=c1");
+    });
+});
+
 describe("filterCommitsByBuildRelevance concurrency", () => {
     test("two independent builds actually overlap in-flight, not just interleaved", async () => {
         const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
@@ -238,7 +304,7 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
         // so both are the endpoint builds, which always run via Promise.all.
         const resultPromise = filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             'echo "$CFLC_INPUT"',
             { concurrency: 2 },
         );
@@ -284,7 +350,7 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
 
         const resultPromise = filterCommitsByBuildRelevance(
             commits,
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c9" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c9" },
             'echo "$CFLC_INPUT"',
             { concurrency: 2 },
         );
@@ -314,6 +380,26 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
         resolveC1();
         resolveC3();
         await resultPromise;
+    });
+
+    // The default concurrency comes from detectConcurrency() (CPU-count-based),
+    // which isn't deterministic/portable to assert an exact number for — this only
+    // proves omitting `options` entirely still produces a correct end-to-end result.
+    test("completes and classifies correctly when concurrency is omitted (auto-detected default)", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+        outputsBySha = { before: "out-a", c1: "out-b", c2: "out-b" };
+
+        const { relevant, irrelevant } = await filterCommitsByBuildRelevance(
+            [
+                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+            ],
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2" },
+            'echo "$CFLC_INPUT"',
+        );
+
+        expect(relevant.map((c) => c.sha)).toEqual(["c1"]);
+        expect(irrelevant.map((c) => c.sha)).toEqual(["c2"]);
     });
 });
 
@@ -350,7 +436,7 @@ describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             "echo ok",
         );
 
@@ -364,7 +450,7 @@ describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             "echo ok",
         );
 
@@ -385,7 +471,7 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -402,7 +488,7 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             'echo "$CFLC_INPUT"',
         );
 
@@ -428,7 +514,7 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
 
             const { relevant, irrelevant } = await filterCommitsByBuildRelevance(
                 [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+                { type: "github", owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
                 "echo ok",
             );
 

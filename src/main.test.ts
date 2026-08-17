@@ -27,7 +27,6 @@ let infoMock: Mock<(message: string) => void>;
 let debugMock: Mock<(message: string) => void>;
 let isDebugEnabled = false;
 let buildFilterInput = "";
-let buildFilterConcurrencyInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -52,7 +51,6 @@ beforeEach(async () => {
     debugMock = mock(() => {});
     isDebugEnabled = false;
     buildFilterInput = "";
-    buildFilterConcurrencyInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
     getCachedBuildFilterResultMock = mock(() => undefined);
@@ -63,7 +61,6 @@ beforeEach(async () => {
             getInput: mock((input: string) => {
                 if (input === "pull-request-number") return "42";
                 if (input === "build-filter") return buildFilterInput;
-                if (input === "build-filter-concurrency") return buildFilterConcurrencyInput;
                 return "";
             }),
             info: infoMock,
@@ -369,13 +366,15 @@ describe("run", () => {
         expect(storedResult).toEqual(filtered);
     });
 
-    test("passes build-filter-concurrency through to build-filter as options.concurrency", async () => {
+    test("calls filterCommitsByBuildRelevance without a concurrency override, relying on its auto-detected default", async () => {
+        // The concurrency action input was removed — concurrency is now entirely up
+        // to filterCommitsByBuildRelevance's own default (detectConcurrency(),
+        // CPU-based). main.ts must never pass a 4th argument.
         getPullRequestDetailsMock.mockImplementation(async () => ({
             authorLogin: "someone",
             body: "",
         }));
         buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
-        buildFilterConcurrencyInput = "8";
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
         filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
@@ -383,36 +382,8 @@ describe("run", () => {
         const { run } = await import("~/main");
         await run();
 
-        const [, , , passedOptions] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
-            typeof commits,
-            unknown,
-            string,
-            { concurrency?: number },
-        ];
-        expect(passedOptions).toEqual({ concurrency: 8 });
-    });
-
-    test("defaults build-filter-concurrency to 4 when the input is empty", async () => {
-        getPullRequestDetailsMock.mockImplementation(async () => ({
-            authorLogin: "someone",
-            body: "",
-        }));
-        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
-        // buildFilterConcurrencyInput left at its beforeEach default: "".
-        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
-        compareCommitsMock.mockImplementation(async () => commits);
-        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
-
-        const { run } = await import("~/main");
-        await run();
-
-        const [, , , passedOptions] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
-            typeof commits,
-            unknown,
-            string,
-            { concurrency?: number },
-        ];
-        expect(passedOptions).toEqual({ concurrency: 4 });
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        expect(filterCommitsByBuildRelevanceMock.mock.calls[0]).toHaveLength(3);
     });
 
     test("falls back to showing every commit unfiltered when build-filter throws", async () => {
@@ -660,5 +631,186 @@ describe("run", () => {
         expect(passedDiff.host).toBeUndefined();
         expect("dir" in passedDiff).toBe(false);
         expect("host" in passedDiff).toBe(false);
+    });
+
+    test("recognizes a git-type locked node pointing at github.com, extracting owner/repo from its URL", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input flake-utils "$CFLC_INPUT"';
+
+        const gitBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://github.com/numtide/flake-utils.git", rev: "aaaa1111" },
+                },
+            },
+        });
+        const gitAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://github.com/numtide/flake-utils.git", rev: "bbbb2222" },
+                },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? gitBefore : gitAfter,
+        );
+        const commits = [
+            { sha: "sha0", message: "a commit", url: "https://github.com/numtide/flake-utils/commit/sha0" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(compareCommitsMock).toHaveBeenCalledWith("numtide", "flake-utils", "aaaa1111", "bbbb2222");
+        expect(filterCommitsByBuildRelevanceMock).toHaveBeenCalledTimes(1);
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { type: string; owner: string; repo: string },
+            string,
+        ];
+        expect(passedDiff).toMatchObject({ type: "git", owner: "numtide", repo: "flake-utils" });
+
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).toContain("### [numtide/flake-utils]");
+    });
+
+    test("recognizes a git-type locked node URL without a .git suffix", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+
+        const before = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://github.com/numtide/flake-utils", rev: "aaaa1111" },
+                },
+            },
+        });
+        const after = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://github.com/numtide/flake-utils", rev: "bbbb2222" },
+                },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? before : after,
+        );
+        const commits = [
+            { sha: "sha0", message: "a commit", url: "https://github.com/numtide/flake-utils/commit/sha0" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(compareCommitsMock).toHaveBeenCalledWith("numtide", "flake-utils", "aaaa1111", "bbbb2222");
+    });
+
+    test("silently skips a git-type locked node whose URL is not github.com-hosted", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+
+        const gitlabBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://gitlab.com/acme/flake-utils.git", rev: "aaaa1111" },
+                },
+            },
+        });
+        const gitlabAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: { type: "git", url: "https://gitlab.com/acme/flake-utils.git", rev: "bbbb2222" },
+                },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? gitlabBefore : gitlabAfter,
+        );
+
+        const { run } = await import("~/main");
+        await run();
+
+        expect(compareCommitsMock).not.toHaveBeenCalled();
+        expect(filterCommitsByBuildRelevanceMock).not.toHaveBeenCalled();
+        const [, body] = upsertCommentMock.mock.calls[0];
+        expect(body).not.toContain("gitlab");
+        expect(body).not.toContain("flake-utils");
+    });
+
+    test("threads submodules: true from a git-type locked node through to the constructed Diff", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input flake-utils "$CFLC_INPUT"';
+
+        const submodulesBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: {
+                        type: "git",
+                        url: "https://github.com/numtide/flake-utils",
+                        rev: "aaaa1111",
+                        submodules: true,
+                    },
+                },
+            },
+        });
+        const submodulesAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { "flake-utils": "flake-utils" } },
+                "flake-utils": {
+                    locked: {
+                        type: "git",
+                        url: "https://github.com/numtide/flake-utils",
+                        rev: "bbbb2222",
+                        submodules: true,
+                    },
+                },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? submodulesBefore : submodulesAfter,
+        );
+        const commits = [
+            { sha: "sha0", message: "a commit", url: "https://github.com/numtide/flake-utils/commit/sha0" },
+        ];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { submodules?: boolean },
+            string,
+        ];
+        expect(passedDiff.submodules).toBe(true);
     });
 });

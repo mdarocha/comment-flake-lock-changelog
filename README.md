@@ -11,7 +11,6 @@ input. Meant as a companion to
 | `pull-request-number` | Id of the PR to analyze | none, **required** |
 | `token` | Token used for authentication with the GitHub API | `${{ github.token }}` |
 | `build-filter` | Shell command run at each upstream commit to determine build relevance. See [Build filter](#build-filter). | none |
-| `build-filter-concurrency` | Maximum number of `build-filter` builds to run at once. See [Build filter](#build-filter). | `4` |
 
 ## Example usage
 
@@ -52,6 +51,22 @@ jobs:
 
 ![image](https://github.com/user-attachments/assets/f6a2217f-3d44-462b-a9c9-a1393206369e)
 
+## Supported input types
+
+Only `flake.lock` nodes this action can actually diff are processed at all — everything below
+(commenting, the changelog itself, and `build-filter`) is limited to these:
+
+- **`github`** — the `github:owner/repo` shorthand (or any equivalent Nix resolves the same way).
+- **`git`**, when its URL resolves to a github.com repository — e.g. declared as
+  `git+https://github.com/owner/repo` or `git+ssh://git@github.com/owner/repo` instead of the
+  shorthand. This is a distinct locked type despite pointing at the same host, and is recognized
+  separately from `github`.
+
+Every other locked type — `tarball`, `path`, `indirect`, `mercurial`, or a `git` input hosted anywhere
+but github.com (GitLab, sourcehut, a self-hosted server) — is skipped entirely. This action's commit
+listing (`compareCommits`) is a GitHub REST API call with no equivalent for those hosts or fetcher
+kinds, so there's no commit range to diff or filter for them.
+
 ## Build filter
 
 A `flake.lock` bump often drags in commits that don't actually change what gets built, docs,
@@ -85,7 +100,7 @@ builds it, and prints the resulting store path, which the action uses as that co
 
 | Variable | Description |
 | :-- | :-- |
-| `CFLC_INPUT` | A `github:owner/repo/rev` flake reference (with `?host=`/`&dir=` when the input's locked node sets a GitHub Enterprise host or subdirectory flake) pointing at the commit currently under test. Pass it directly to `--override-input`. |
+| `CFLC_INPUT` | A flake reference pointing at the commit currently under test, matching whichever locked type the input actually has (see [Supported input types](#supported-input-types)): `github:owner/repo/rev` (with `?host=`/`&dir=` for GitHub Enterprise/subdirectory flakes) for `github`-type inputs, or `git+https://github.com/owner/repo?rev=...` (with `&dir=`/`&submodules=1` when set) for `git`-type inputs. Pass it directly to `--override-input`; your build command doesn't need to know or care which of the two it is. |
 
 ### What your command should output
 
@@ -136,12 +151,15 @@ Run this action before restoring any build cache in the job.
 ### Concurrent builds
 
 `build-filter` builds run concurrently — the two endpoint builds, and the two halves below any bisect
-midpoint, have no data dependency on each other — bounded by `build-filter-concurrency` (default `4`).
-Every build fetches its input via Nix's own `github:` tarball fetcher (see `CFLC_INPUT` above), so
-there's no local git clone or checkout involved at all; raising `build-filter-concurrency` trades peak
-disk usage (each concurrent build imports its own fetched revision into the Nix store — see
-[Disk space](#disk-space)) for wall-clock speed on large bisections. Set it to `1` to fall back to
-fully sequential builds.
+midpoint, have no data dependency on each other. Concurrency is detected automatically from the
+runner's available CPUs (`os.availableParallelism()`, which respects container/cgroup quotas rather
+than a host's raw core count — relevant on containerized self-hosted runners), clamped to at most 8
+regardless of how many cores a large runner reports: beyond a handful of simultaneous builds, more
+parallelism trades disk and network pressure for diminishing wall-clock returns. Every build fetches
+its input directly via Nix's own fetchers (see `CFLC_INPUT` above), so there's no local git clone or
+checkout involved at all — more concurrent builds just means more peak disk usage, since each one
+imports its own fetched revision into the Nix store (see [Disk space](#disk-space)), in exchange for
+wall-clock speed on large bisections. There's no manual override for this — it isn't configurable.
 
 ### Result caching
 

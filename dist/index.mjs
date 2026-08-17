@@ -66800,6 +66800,7 @@ async function saveCacheForRepo(owner, repo) {
 import * as fs8 from "fs";
 import { spawn as spawn2 } from "node:child_process";
 import * as crypto4 from "node:crypto";
+import * as os8 from "node:os";
 import * as path12 from "path";
 var LOG_FINGERPRINT_MAX_LENGTH = 200;
 function truncateForLog(value, maxLength = LOG_FINGERPRINT_MAX_LENGTH) {
@@ -66855,6 +66856,11 @@ class Semaphore {
       this.slots++;
     }
   }
+}
+var MAX_AUTO_CONCURRENCY = 8;
+function detectConcurrency() {
+  const available = os8.availableParallelism?.() ?? os8.cpus().length;
+  return Math.max(1, Math.min(available || 1, MAX_AUTO_CONCURRENCY));
 }
 var NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
 function collectNixStateFiles(dir, root, out) {
@@ -66918,7 +66924,17 @@ async function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
     bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn)
   ]);
 }
-function buildGithubFlakeRef(diff, sha) {
+function buildInputFlakeRef(diff, sha) {
+  if (diff.type === "git") {
+    const params2 = [`rev=${encodeURIComponent(sha)}`];
+    if (diff.dir !== undefined) {
+      params2.push(`dir=${encodeURIComponent(diff.dir)}`);
+    }
+    if (diff.submodules === true) {
+      params2.push("submodules=1");
+    }
+    return `git+https://github.com/${diff.owner}/${diff.repo}?${params2.join("&")}`;
+  }
   const params = [];
   if (diff.host !== undefined) {
     params.push(`host=${encodeURIComponent(diff.host)}`);
@@ -66934,7 +66950,7 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
   const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
   const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
   const cmdParts = ["sh", "-c", buildCommand];
-  const semaphore = new Semaphore(options?.concurrency ?? 1);
+  const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
   const buildFn = async (sha) => {
     await semaphore.acquire();
     try {
@@ -66943,7 +66959,7 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
         cwd: process.cwd(),
         env: {
           ...process.env,
-          CFLC_INPUT: buildGithubFlakeRef(diff, sha)
+          CFLC_INPUT: buildInputFlakeRef(diff, sha)
         }
       });
       if (result.exitCode !== 0) {
@@ -66992,17 +67008,60 @@ function parseRawLockfile(content) {
   const data = JSON.parse(content);
   return { root: data.root ?? "root", nodes: data.nodes ?? {} };
 }
+function extractGithubOwnerRepo(url2) {
+  let normalized = url2;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+    const scpMatch = /^(?:([^/@]+)@)?([^/@:]+):(.+)$/.exec(normalized);
+    if (scpMatch) {
+      const [, userAt, host, rest] = scpMatch;
+      normalized = `ssh://${userAt !== undefined ? `${userAt}@` : ""}${host}/${rest}`;
+    }
+  }
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return;
+  }
+  if (parsed.hostname.toLowerCase() !== "github.com") {
+    return;
+  }
+  const segments = parsed.pathname.split("/").filter((s) => s.length > 0);
+  if (segments.length < 2) {
+    return;
+  }
+  const [owner, repoRaw] = segments;
+  const repo = repoRaw.endsWith(".git") ? repoRaw.slice(0, -4) : repoRaw;
+  return { owner, repo };
+}
 function toLockfile(raw) {
-  return Object.entries(raw.nodes).filter(([key]) => key !== raw.root).filter(([, node]) => node.locked?.type === "github").reduce((acc, [key, node]) => {
+  return Object.entries(raw.nodes).filter(([key]) => key !== raw.root).reduce((acc, [key, node]) => {
     const locked = node.locked;
-    acc[key] = {
-      type: locked.type,
-      owner: locked.owner,
-      repo: locked.repo,
-      rev: locked.rev,
-      ...locked.dir !== undefined ? { dir: locked.dir } : {},
-      ...locked.host !== undefined ? { host: locked.host } : {}
-    };
+    if (locked?.rev === undefined) {
+      return acc;
+    }
+    if (locked.type === "github" && locked.owner !== undefined && locked.repo !== undefined) {
+      acc[key] = {
+        type: "github",
+        owner: locked.owner,
+        repo: locked.repo,
+        rev: locked.rev,
+        ...locked.dir !== undefined ? { dir: locked.dir } : {},
+        ...locked.host !== undefined ? { host: locked.host } : {}
+      };
+    } else if (locked.type === "git" && locked.url !== undefined) {
+      const ownerRepo = extractGithubOwnerRepo(locked.url);
+      if (ownerRepo !== undefined) {
+        acc[key] = {
+          type: "git",
+          owner: ownerRepo.owner,
+          repo: ownerRepo.repo,
+          rev: locked.rev,
+          ...locked.dir !== undefined ? { dir: locked.dir } : {},
+          ...locked.submodules !== undefined ? { submodules: locked.submodules } : {}
+        };
+      }
+    }
     return acc;
   }, {});
 }
@@ -67055,7 +67114,7 @@ function resolveFollowsPath(nodes, root, path13) {
   return current;
 }
 function getLockfileDiffs(before, after, afterRaw) {
-  return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => {
+  return Object.entries(after).filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => {
     const name = resolveInputPath(afterRaw, key);
     if (name === undefined) {
       warning(`Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` + "falling back to the raw node key, which will likely not match any real " + "--override-input target.");
@@ -67134,8 +67193,6 @@ ${COMMENT_TAG_PATTERN}`.length;
     return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
   }
   const buildFilter = getInput("build-filter");
-  const buildFilterConcurrencyInput = getInput("build-filter-concurrency");
-  const buildFilterConcurrency = buildFilterConcurrencyInput === "" ? 4 : parseInt(buildFilterConcurrencyInput, 10);
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -67181,9 +67238,7 @@ ${COMMENT_TAG_PATTERN}`.length;
         } else {
           info(`Running build-filter for ${diff.owner}/${diff.repo}`);
           try {
-            const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-              concurrency: buildFilterConcurrency
-            });
+            const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter);
             relevant = filtered.relevant;
             irrelevant = filtered.irrelevant;
             setCachedBuildFilterResult(cacheKey, filtered);

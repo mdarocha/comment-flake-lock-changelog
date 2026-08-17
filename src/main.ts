@@ -17,16 +17,39 @@ import {
 } from "~/api";
 import { computeNixStateHash, filterCommitsByBuildRelevance } from "~/buildFilter";
 
-interface LockfileItem {
+// Raw shape of a flake.lock node's `locked` field, straight from JSON — loosely
+// typed since only a subset of fields is ever present, depending on which fetcher
+// Nix resolved the input to. `owner`/`repo`/`host` are "github"-type fields; `url`/
+// `submodules` are "git"-type fields. Every other locked type (tarball, path,
+// indirect, mercurial, ...) is never processed past this point — see toLockfile.
+interface RawLockedNode {
     type: string;
+    owner?: string;
+    repo?: string;
+    rev?: string;
+    dir?: string;
+    host?: string;
+    url?: string;
+    submodules?: boolean;
+}
+
+// Normalized, internal shape every entry in Lockfile is guaranteed to have,
+// regardless of which locked type it started out as. toLockfile is the only
+// place that produces these, and only once owner/repo/rev are all known for
+// certain — for "git", that means successfully parsing a github.com URL.
+interface LockfileItem {
+    type: "github" | "git";
     owner: string;
     repo: string;
     rev: string;
-    // Subdirectory flake (flake.nix not at repo root) and GitHub Enterprise host,
-    // respectively — both optional locked-node fields. Dropping either silently would
-    // produce a wrong CFLC_INPUT override for any repo that sets them.
+    // Subdirectory flake (flake.nix not at repo root), valid for either type.
+    // Dropping it silently would produce a wrong CFLC_INPUT override for any repo
+    // that sets it.
     dir?: string;
+    // "github" type only: a non-default (GitHub Enterprise) host.
     host?: string;
+    // "git" type only: whether the locked node fetches submodules.
+    submodules?: boolean;
 }
 
 type Lockfile = Record<string, LockfileItem>;
@@ -35,7 +58,7 @@ type Commit = { sha: string; message: string; url: string };
 // A raw flake.lock node's `inputs` entries are either a direct reference to another
 // node (by key) or a `follows` alias, encoded as the absolute input path (names, not
 // node keys) from the lock file's root — see resolveInputPath below.
-type RawLockNode = { inputs?: Record<string, string | string[]>; locked?: LockfileItem };
+type RawLockNode = { inputs?: Record<string, string | string[]>; locked?: RawLockedNode };
 interface RawLockfile {
     root: string;
     nodes: Record<string, RawLockNode>;
@@ -49,20 +72,91 @@ function parseRawLockfile(content: string): RawLockfile {
     return { root: data.root ?? "root", nodes: data.nodes ?? {} };
 }
 
+/**
+ * Extracts `{owner, repo}` from a git remote URL, when it points at github.com —
+ * the only host this action's commit-listing (`compareCommits`, a GitHub REST API
+ * call) can diff at all; a "git"-type locked node pointing anywhere else (GitLab,
+ * sourcehut, a self-hosted server) has no equivalent endpoint this action can
+ * call, so it's left undiffable, same as every other unsupported locked type.
+ * Handles the URL forms Nix's git fetcher writes into flake.lock `url` fields:
+ * `https://github.com/owner/repo[.git]`, `ssh://git@github.com/owner/repo[.git]`,
+ * and (defensively) scp-like `git@github.com:owner/repo[.git]`. Returns undefined
+ * for any other host, or a URL that doesn't parse at all.
+ */
+function extractGithubOwnerRepo(url: string): { owner: string; repo: string } | undefined {
+    let normalized = url;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+        const scpMatch = /^(?:([^/@]+)@)?([^/@:]+):(.+)$/.exec(normalized);
+        if (scpMatch) {
+            const [, userAt, host, rest] = scpMatch;
+            normalized = `ssh://${userAt !== undefined ? `${userAt}@` : ""}${host}/${rest}`;
+        }
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(normalized);
+    } catch {
+        return undefined;
+    }
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+        return undefined;
+    }
+    const segments = parsed.pathname.split("/").filter((s) => s.length > 0);
+    if (segments.length < 2) {
+        return undefined;
+    }
+    const [owner, repoRaw] = segments;
+    const repo = repoRaw.endsWith(".git") ? repoRaw.slice(0, -4) : repoRaw;
+    return { owner, repo };
+}
+
+/**
+ * Normalizes every diffable flake.lock node into a uniform `{owner, repo, rev, ...}`
+ * shape, regardless of its original locked type. Only two locked types ever
+ * produce an entry here:
+ *
+ * - `"github"`: `owner`/`repo`/`rev`/`host`/`dir` come straight from the locked
+ *   node.
+ * - `"git"`, when its `url` resolves to a github.com repo (see
+ *   `extractGithubOwnerRepo`) — `owner`/`repo` are parsed from the URL. This
+ *   covers inputs declared as `git+https://github.com/owner/repo` (or
+ *   `git+ssh://...`) instead of the `github:owner/repo` shorthand, which is a
+ *   distinct, common locked type despite pointing at the same host.
+ *
+ * Every other locked type (tarball, path, indirect, mercurial, a "git" node
+ * hosted anywhere but github.com, ...) is skipped outright: none of them carry a
+ * commit history this action's GitHub-REST-API-based diffing can compare.
+ */
 function toLockfile(raw: RawLockfile): Lockfile {
     return Object.entries(raw.nodes)
         .filter(([key]) => key !== raw.root)
-        .filter(([, node]) => node.locked?.type === "github")
         .reduce<Lockfile>((acc, [key, node]) => {
-            const locked = node.locked as LockfileItem;
-            acc[key] = {
-                type: locked.type,
-                owner: locked.owner,
-                repo: locked.repo,
-                rev: locked.rev,
-                ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
-                ...(locked.host !== undefined ? { host: locked.host } : {}),
-            };
+            const locked = node.locked;
+            if (locked?.rev === undefined) {
+                return acc;
+            }
+            if (locked.type === "github" && locked.owner !== undefined && locked.repo !== undefined) {
+                acc[key] = {
+                    type: "github",
+                    owner: locked.owner,
+                    repo: locked.repo,
+                    rev: locked.rev,
+                    ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
+                    ...(locked.host !== undefined ? { host: locked.host } : {}),
+                };
+            } else if (locked.type === "git" && locked.url !== undefined) {
+                const ownerRepo = extractGithubOwnerRepo(locked.url);
+                if (ownerRepo !== undefined) {
+                    acc[key] = {
+                        type: "git",
+                        owner: ownerRepo.owner,
+                        repo: ownerRepo.repo,
+                        rev: locked.rev,
+                        ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
+                        ...(locked.submodules !== undefined ? { submodules: locked.submodules } : {}),
+                    };
+                }
+            }
             return acc;
         }, {});
 }
@@ -140,8 +234,10 @@ function getLockfileDiffs(
     after: Lockfile,
     afterRaw: RawLockfile,
 ): Array<LockfileItem & { beforeRev: string; name: string }> {
+    // No type filter needed here — toLockfile already only ever produces entries
+    // for the two diffable locked types ("github", and "git" resolved to a
+    // github.com repo), so every entry in `after` is already eligible.
     return Object.entries(after)
-        .filter(([_key, value]) => value.type === "github")
         .filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev)
         .map(([key, value]) => {
             const name = resolveInputPath(afterRaw, key);
@@ -239,8 +335,6 @@ export async function run(): Promise<void> {
     }
 
     const buildFilter = core.getInput("build-filter");
-    const buildFilterConcurrencyInput = core.getInput("build-filter-concurrency");
-    const buildFilterConcurrency = buildFilterConcurrencyInput === "" ? 4 : parseInt(buildFilterConcurrencyInput, 10);
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -319,9 +413,7 @@ export async function run(): Promise<void> {
                 } else {
                     core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
                     try {
-                        const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-                            concurrency: buildFilterConcurrency,
-                        });
+                        const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter);
                         relevant = filtered.relevant;
                         irrelevant = filtered.irrelevant;
                         setCachedBuildFilterResult(cacheKey, filtered);
