@@ -27,7 +27,7 @@ let infoMock: Mock<(message: string) => void>;
 let debugMock: Mock<(message: string) => void>;
 let isDebugEnabled = false;
 let buildFilterInput = "";
-let buildFilterGcInput = "";
+let buildFilterConcurrencyInput = "";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let compareCommitsMock: Mock<any>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -52,7 +52,7 @@ beforeEach(async () => {
     debugMock = mock(() => {});
     isDebugEnabled = false;
     buildFilterInput = "";
-    buildFilterGcInput = "";
+    buildFilterConcurrencyInput = "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     filterCommitsByBuildRelevanceMock = mock((commits: any[]) => ({ relevant: commits, irrelevant: [] }));
     getCachedBuildFilterResultMock = mock(() => undefined);
@@ -63,7 +63,7 @@ beforeEach(async () => {
             getInput: mock((input: string) => {
                 if (input === "pull-request-number") return "42";
                 if (input === "build-filter") return buildFilterInput;
-                if (input === "build-filter-gc") return buildFilterGcInput;
+                if (input === "build-filter-concurrency") return buildFilterConcurrencyInput;
                 return "";
             }),
             info: infoMock,
@@ -369,13 +369,13 @@ describe("run", () => {
         expect(storedResult).toEqual(filtered);
     });
 
-    test("passes gcBetweenBuilds through to build-filter only when build-filter-gc is set", async () => {
+    test("passes build-filter-concurrency through to build-filter as options.concurrency", async () => {
         getPullRequestDetailsMock.mockImplementation(async () => ({
             authorLogin: "someone",
             body: "",
         }));
         buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
-        buildFilterGcInput = "true";
+        buildFilterConcurrencyInput = "8";
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
         filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
@@ -387,9 +387,32 @@ describe("run", () => {
             typeof commits,
             unknown,
             string,
-            { gcBetweenBuilds?: boolean },
+            { concurrency?: number },
         ];
-        expect(passedOptions).toEqual({ gcBetweenBuilds: true });
+        expect(passedOptions).toEqual({ concurrency: 8 });
+    });
+
+    test("defaults build-filter-concurrency to 4 when the input is empty", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        // buildFilterConcurrencyInput left at its beforeEach default: "".
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, , , passedOptions] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            unknown,
+            string,
+            { concurrency?: number },
+        ];
+        expect(passedOptions).toEqual({ concurrency: 4 });
     });
 
     test("falls back to showing every commit unfiltered when build-filter throws", async () => {
@@ -553,5 +576,88 @@ describe("run", () => {
         expect(warningMock.mock.calls[0][0]).toContain(
             'Could not resolve a flake input path for flake.lock node "orphan"',
         );
+    });
+
+    test("carries dir/host through from the locked node when present, and omits them when absent", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix eval --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT_URL" --raw ".#drvPath"';
+
+        const withDirHostBefore = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs" } },
+                nixpkgs: {
+                    locked: {
+                        owner: "NixOS",
+                        repo: "nixpkgs",
+                        rev: "aaaa1111",
+                        type: "github",
+                        dir: "sub/flake",
+                        host: "github.example.com",
+                    },
+                },
+            },
+        });
+        const withDirHostAfter = JSON.stringify({
+            root: "root",
+            nodes: {
+                root: { inputs: { nixpkgs: "nixpkgs" } },
+                nixpkgs: {
+                    locked: {
+                        owner: "NixOS",
+                        repo: "nixpkgs",
+                        rev: "bbbb2222",
+                        type: "github",
+                        dir: "sub/flake",
+                        host: "github.example.com",
+                    },
+                },
+            },
+        });
+        getFileContentAtCommitMock.mockImplementation(async (commit: string) =>
+            commit === "basesha" ? withDirHostBefore : withDirHostAfter,
+        );
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { dir?: string; host?: string },
+            string,
+        ];
+        expect(passedDiff.dir).toBe("sub/flake");
+        expect(passedDiff.host).toBe("github.example.com");
+    });
+
+    test("omits dir/host (undefined, not empty string) when the locked node doesn't have them", async () => {
+        getPullRequestDetailsMock.mockImplementation(async () => ({
+            authorLogin: "someone",
+            body: "",
+        }));
+        buildFilterInput = 'nix eval --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT_URL" --raw ".#drvPath"';
+        // Default fixtures (BEFORE_LOCK/AFTER_LOCK) never set dir/host.
+        const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
+        compareCommitsMock.mockImplementation(async () => commits);
+        filterCommitsByBuildRelevanceMock.mockImplementation(() => ({ relevant: commits, irrelevant: [] }));
+
+        const { run } = await import("~/main");
+        await run();
+
+        const [, passedDiff] = filterCommitsByBuildRelevanceMock.mock.calls[0] as [
+            typeof commits,
+            { dir?: string; host?: string },
+            string,
+        ];
+        expect(passedDiff.dir).toBeUndefined();
+        expect(passedDiff.host).toBeUndefined();
+        expect("dir" in passedDiff).toBe(false);
+        expect("host" in passedDiff).toBe(false);
     });
 });

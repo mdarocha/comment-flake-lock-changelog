@@ -66798,7 +66798,7 @@ async function saveCacheForRepo(owner, repo) {
 
 // src/buildFilter.ts
 import * as fs8 from "fs";
-import { spawnSync } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import * as crypto4 from "node:crypto";
 import * as os8 from "os";
 import * as path12 from "path";
@@ -66810,19 +66810,55 @@ function truncateForLog(value, maxLength = LOG_FINGERPRINT_MAX_LENGTH) {
   return `${value.slice(0, maxLength)}... (${value.length} chars total)`;
 }
 function spawnCmd(cmd, opts) {
-  const result = spawnSync(cmd[0], cmd.slice(1), {
+  const { promise, resolve: resolve2 } = Promise.withResolvers();
+  const child2 = spawn2(cmd[0], cmd.slice(1), {
     ...opts?.cwd !== undefined ? { cwd: opts.cwd } : {},
     ...opts?.env !== undefined ? { env: opts.env } : {},
-    encoding: "utf8"
+    stdio: ["ignore", "pipe", "pipe"]
   });
-  return {
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    exitCode: result.status ?? 1
-  };
+  let stdout = "";
+  let stderr = "";
+  child2.stdout?.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child2.stderr?.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+  });
+  child2.on("error", (err) => {
+    resolve2({ stdout, stderr: stderr || err.message, exitCode: 1 });
+  });
+  child2.on("close", (code) => {
+    resolve2({ stdout, stderr, exitCode: code ?? 1 });
+  });
+  return promise;
 }
-function isGitAvailable() {
-  return spawnCmd(["git", "--version"]).exitCode === 0;
+async function isGitAvailable() {
+  return (await spawnCmd(["git", "--version"])).exitCode === 0;
+}
+
+class Semaphore {
+  slots;
+  waiters = [];
+  constructor(concurrency) {
+    this.slots = Math.max(1, concurrency);
+  }
+  async acquire() {
+    if (this.slots > 0) {
+      this.slots--;
+      return;
+    }
+    const { promise, resolve: resolve2 } = Promise.withResolvers();
+    this.waiters.push(resolve2);
+    await promise;
+  }
+  release() {
+    const next = this.waiters.shift();
+    if (next) {
+      next();
+    } else {
+      this.slots++;
+    }
+  }
 }
 var NIX_STATE_IGNORED_DIRS = new Set([".git", "node_modules", ".direnv", "result"]);
 function collectNixStateFiles(dir, root, out) {
@@ -66862,13 +66898,13 @@ function computeNixStateHash(cwd = process.cwd()) {
   cachedNixStateHash = hash.digest("hex");
   return cachedNixStateHash;
 }
-function collectGarbage() {
-  const result = spawnCmd(["nix", "store", "gc"]);
+async function collectGarbage() {
+  const result = await spawnCmd(["nix", "store", "gc"]);
   if (result.exitCode !== 0) {
     warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
   }
 }
-function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
+async function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   if (outLo === outHi) {
     for (let i = lo + 1;i <= hi; i++)
       outputs.set(i, outLo);
@@ -66879,13 +66915,26 @@ function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
     return;
   }
   const mid = Math.floor((lo + hi) / 2);
-  const outMid = buildFn(allShas[mid]);
+  const outMid = await buildFn(allShas[mid]);
   outputs.set(mid, outMid);
-  bisect(lo, mid, outLo, outMid, allShas, outputs, buildFn);
-  bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn);
+  await Promise.all([
+    bisect(lo, mid, outLo, outMid, allShas, outputs, buildFn),
+    bisect(mid, hi, outMid, outHi, allShas, outputs, buildFn)
+  ]);
 }
-function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
-  if (!isGitAvailable()) {
+function buildGithubFlakeRef(diff, sha) {
+  const params = [];
+  if (diff.host !== undefined) {
+    params.push(`host=${encodeURIComponent(diff.host)}`);
+  }
+  if (diff.dir !== undefined) {
+    params.push(`dir=${encodeURIComponent(diff.dir)}`);
+  }
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
+  return `github:${diff.owner}/${diff.repo}/${sha}${query}`;
+}
+async function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
+  if (!await isGitAvailable()) {
     throw new Error("git not found in PATH — cannot run build-filter");
   }
   info(`build-filter: ${diff.owner}/${diff.repo} — evaluating ${commits.length} commit(s) between ` + `${diff.beforeRev} and ${diff.rev}`);
@@ -66896,38 +66945,59 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
     const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
     const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
     info(`build-filter: cloning ${repoUrl}`);
-    const cloneResult = spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
+    const cloneResult = await spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
     if (cloneResult.exitCode !== 0) {
       throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
     }
     const cmdParts = ["sh", "-c", buildCommand];
-    const buildFn = (sha) => {
-      info(`build-filter: building ${sha}`);
-      const checkoutResult = spawnCmd(["git", "checkout", sha], { cwd: repoPath });
-      if (checkoutResult.exitCode !== 0) {
-        throw new Error(`git checkout ${sha} failed: ${checkoutResult.stderr}`);
-      }
-      const result = spawnCmd(cmdParts, {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          CFLC_INPUT_NAME: diff.name,
-          CFLC_INPUT_PATH: repoPath,
-          CFLC_INPUT_REV: sha
+    const semaphore = new Semaphore(options?.concurrency ?? 1);
+    const needsCheckout = buildCommand.includes("CFLC_INPUT_PATH");
+    const buildFn = async (sha) => {
+      await semaphore.acquire();
+      const worktreeDir = needsCheckout ? path12.join(tmpDir, `worktree-${sha}`) : undefined;
+      try {
+        info(`build-filter: building ${sha}`);
+        if (worktreeDir !== undefined) {
+          const worktreeResult = await spawnCmd(["git", "worktree", "add", worktreeDir, sha], {
+            cwd: repoPath
+          });
+          if (worktreeResult.exitCode !== 0) {
+            throw new Error(`git worktree add ${sha} failed: ${worktreeResult.stderr}`);
+          }
         }
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+        try {
+          const result = await spawnCmd(cmdParts, {
+            cwd: process.cwd(),
+            env: {
+              ...process.env,
+              CFLC_INPUT_NAME: diff.name,
+              CFLC_INPUT_PATH: worktreeDir ?? "",
+              CFLC_INPUT_REV: sha,
+              CFLC_INPUT_URL: buildGithubFlakeRef(diff, sha)
+            }
+          });
+          if (result.exitCode !== 0) {
+            throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+          }
+          const fingerprint = result.stdout.trim();
+          info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+          await collectGarbage();
+          return fingerprint;
+        } finally {
+          if (worktreeDir !== undefined) {
+            const removeResult = await spawnCmd(["git", "worktree", "remove", "--force", worktreeDir], {
+              cwd: repoPath
+            });
+            if (removeResult.exitCode !== 0) {
+              warning(`build-filter: \`git worktree remove\` failed for ${sha} (continuing anyway): ${removeResult.stderr}`);
+            }
+          }
+        }
+      } finally {
+        semaphore.release();
       }
-      const fingerprint = result.stdout.trim();
-      info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
-      if (options?.gcBetweenBuilds) {
-        collectGarbage();
-      }
-      return fingerprint;
     };
-    const outFirst = buildFn(allShas[0]);
-    const outLast = buildFn(allShas[allShas.length - 1]);
+    const [outFirst, outLast] = await Promise.all([buildFn(allShas[0]), buildFn(allShas[allShas.length - 1])]);
     const outputs = new Map;
     outputs.set(0, outFirst);
     outputs.set(allShas.length - 1, outLast);
@@ -66936,7 +67006,7 @@ function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
     } else {
       info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
     }
-    bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
+    await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
     const relevant = [];
     const irrelevant = [];
     for (let i = 0;i < commits.length; i++) {
@@ -66968,7 +67038,14 @@ function parseRawLockfile(content) {
 function toLockfile(raw) {
   return Object.entries(raw.nodes).filter(([key]) => key !== raw.root).filter(([, node]) => node.locked?.type === "github").reduce((acc, [key, node]) => {
     const locked = node.locked;
-    acc[key] = { type: locked.type, owner: locked.owner, repo: locked.repo, rev: locked.rev };
+    acc[key] = {
+      type: locked.type,
+      owner: locked.owner,
+      repo: locked.repo,
+      rev: locked.rev,
+      ...locked.dir !== undefined ? { dir: locked.dir } : {},
+      ...locked.host !== undefined ? { host: locked.host } : {}
+    };
     return acc;
   }, {});
 }
@@ -67100,7 +67177,8 @@ ${COMMENT_TAG_PATTERN}`.length;
     return `${item} - [![PR Icon](https://icongr.am/octicons/git-pull-request.svg?size=14&color=abb4bf) PR #${pr.id}](${prUrl})`;
   }
   const buildFilter = getInput("build-filter");
-  const buildFilterGc = getInput("build-filter-gc") === "true";
+  const buildFilterConcurrencyInput = getInput("build-filter-concurrency");
+  const buildFilterConcurrency = buildFilterConcurrencyInput === "" ? 4 : parseInt(buildFilterConcurrencyInput, 10);
   const result = ["# Flake inputs changelog"];
   info(`Fetching changed files for PR #${prNumber}`);
   const files = await getPullRequestChangedFiles(prNumber);
@@ -67146,8 +67224,8 @@ ${COMMENT_TAG_PATTERN}`.length;
         } else {
           info(`Running build-filter for ${diff.owner}/${diff.repo}`);
           try {
-            const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-              gcBetweenBuilds: buildFilterGc
+            const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+              concurrency: buildFilterConcurrency
             });
             relevant = filtered.relevant;
             irrelevant = filtered.irrelevant;

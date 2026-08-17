@@ -22,6 +22,11 @@ interface LockfileItem {
     owner: string;
     repo: string;
     rev: string;
+    // Subdirectory flake (flake.nix not at repo root) and GitHub Enterprise host,
+    // respectively — both optional locked-node fields. Dropping either silently would
+    // produce a wrong CFLC_INPUT_URL override for any repo that sets them.
+    dir?: string;
+    host?: string;
 }
 
 type Lockfile = Record<string, LockfileItem>;
@@ -50,7 +55,14 @@ function toLockfile(raw: RawLockfile): Lockfile {
         .filter(([, node]) => node.locked?.type === "github")
         .reduce<Lockfile>((acc, [key, node]) => {
             const locked = node.locked as LockfileItem;
-            acc[key] = { type: locked.type, owner: locked.owner, repo: locked.repo, rev: locked.rev };
+            acc[key] = {
+                type: locked.type,
+                owner: locked.owner,
+                repo: locked.repo,
+                rev: locked.rev,
+                ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
+                ...(locked.host !== undefined ? { host: locked.host } : {}),
+            };
             return acc;
         }, {});
 }
@@ -227,7 +239,8 @@ export async function run(): Promise<void> {
     }
 
     const buildFilter = core.getInput("build-filter");
-    const buildFilterGc = core.getInput("build-filter-gc") === "true";
+    const buildFilterConcurrencyInput = core.getInput("build-filter-concurrency");
+    const buildFilterConcurrency = buildFilterConcurrencyInput === "" ? 4 : parseInt(buildFilterConcurrencyInput, 10);
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -306,8 +319,8 @@ export async function run(): Promise<void> {
                 } else {
                     core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
                     try {
-                        const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-                            gcBetweenBuilds: buildFilterGc,
+                        const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter, {
+                            concurrency: buildFilterConcurrency,
                         });
                         relevant = filtered.relevant;
                         irrelevant = filtered.irrelevant;
