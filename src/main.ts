@@ -24,7 +24,7 @@ interface LockfileItem {
     rev: string;
     // Subdirectory flake (flake.nix not at repo root) and GitHub Enterprise host,
     // respectively — both optional locked-node fields. Dropping either silently would
-    // produce a wrong CFLC_INPUT_URL override for any repo that sets them.
+    // produce a wrong CFLC_INPUT override for any repo that sets them.
     dir?: string;
     host?: string;
 }
@@ -148,8 +148,8 @@ function getLockfileDiffs(
             if (name === undefined) {
                 core.warning(
                     `Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` +
-                        "falling back to the raw node key for build-filter's CFLC_INPUT_NAME, which will likely not " +
-                        "match any real --override-input target.",
+                        "falling back to the raw node key, which will likely not match any real " +
+                        "--override-input target.",
                 );
             }
             return {

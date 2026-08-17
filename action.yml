@@ -16,7 +16,7 @@ inputs:
     required: false
     default: ""
   build-filter-concurrency:
-    description: "Maximum number of build-filter builds to run at once, each in its own git worktree off the shared clone. Higher values trade peak disk usage for wall-clock speed on large bisections. See the README's 'Build filter' section for details."
+    description: "Maximum number of build-filter builds to run at once. Higher values trade peak disk usage for wall-clock speed on large bisections. See the README's 'Build filter' section for details."
     required: false
     default: "4"
 runs:

@@ -66800,7 +66800,6 @@ async function saveCacheForRepo(owner, repo) {
 import * as fs8 from "fs";
 import { spawn as spawn2 } from "node:child_process";
 import * as crypto4 from "node:crypto";
-import * as os8 from "os";
 import * as path12 from "path";
 var LOG_FINGERPRINT_MAX_LENGTH = 200;
 function truncateForLog(value, maxLength = LOG_FINGERPRINT_MAX_LENGTH) {
@@ -66831,9 +66830,6 @@ function spawnCmd(cmd, opts) {
     resolve2({ stdout, stderr, exitCode: code ?? 1 });
   });
   return promise;
-}
-async function isGitAvailable() {
-  return (await spawnCmd(["git", "--version"])).exitCode === 0;
 }
 
 class Semaphore {
@@ -66934,97 +66930,58 @@ function buildGithubFlakeRef(diff, sha) {
   return `github:${diff.owner}/${diff.repo}/${sha}${query}`;
 }
 async function filterCommitsByBuildRelevance(commits, diff, buildCommand, options) {
-  if (!await isGitAvailable()) {
-    throw new Error("git not found in PATH — cannot run build-filter");
-  }
   info(`build-filter: ${diff.owner}/${diff.repo} — evaluating ${commits.length} commit(s) between ` + `${diff.beforeRev} and ${diff.rev}`);
-  const tmpDir = fs8.mkdtempSync(path12.join(os8.tmpdir(), "cflc-"));
-  try {
-    const repoPath = path12.join(tmpDir, "repo");
-    const repoUrl = `https://github.com/${diff.owner}/${diff.repo}`;
-    const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
-    const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
-    info(`build-filter: cloning ${repoUrl}`);
-    const cloneResult = await spawnCmd(["git", "clone", "--filter=blob:none", "--no-checkout", repoUrl, repoPath]);
-    if (cloneResult.exitCode !== 0) {
-      throw new Error(`Failed to clone ${repoUrl}: ${cloneResult.stderr}`);
-    }
-    const cmdParts = ["sh", "-c", buildCommand];
-    const semaphore = new Semaphore(options?.concurrency ?? 1);
-    const needsCheckout = buildCommand.includes("CFLC_INPUT_PATH");
-    const buildFn = async (sha) => {
-      await semaphore.acquire();
-      const worktreeDir = needsCheckout ? path12.join(tmpDir, `worktree-${sha}`) : undefined;
-      try {
-        info(`build-filter: building ${sha}`);
-        if (worktreeDir !== undefined) {
-          const worktreeResult = await spawnCmd(["git", "worktree", "add", worktreeDir, sha], {
-            cwd: repoPath
-          });
-          if (worktreeResult.exitCode !== 0) {
-            throw new Error(`git worktree add ${sha} failed: ${worktreeResult.stderr}`);
-          }
+  const lastCommitSha = commits.length > 0 ? commits[commits.length - 1].sha : diff.beforeRev;
+  const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
+  const cmdParts = ["sh", "-c", buildCommand];
+  const semaphore = new Semaphore(options?.concurrency ?? 1);
+  const buildFn = async (sha) => {
+    await semaphore.acquire();
+    try {
+      info(`build-filter: building ${sha}`);
+      const result = await spawnCmd(cmdParts, {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CFLC_INPUT: buildGithubFlakeRef(diff, sha)
         }
-        try {
-          const result = await spawnCmd(cmdParts, {
-            cwd: process.cwd(),
-            env: {
-              ...process.env,
-              CFLC_INPUT_NAME: diff.name,
-              CFLC_INPUT_PATH: worktreeDir ?? "",
-              CFLC_INPUT_REV: sha,
-              CFLC_INPUT_URL: buildGithubFlakeRef(diff, sha)
-            }
-          });
-          if (result.exitCode !== 0) {
-            throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
-          }
-          const fingerprint = result.stdout.trim();
-          info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
-          await collectGarbage();
-          return fingerprint;
-        } finally {
-          if (worktreeDir !== undefined) {
-            const removeResult = await spawnCmd(["git", "worktree", "remove", "--force", worktreeDir], {
-              cwd: repoPath
-            });
-            if (removeResult.exitCode !== 0) {
-              warning(`build-filter: \`git worktree remove\` failed for ${sha} (continuing anyway): ${removeResult.stderr}`);
-            }
-          }
-        }
-      } finally {
-        semaphore.release();
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
       }
-    };
-    const [outFirst, outLast] = await Promise.all([buildFn(allShas[0]), buildFn(allShas[allShas.length - 1])]);
-    const outputs = new Map;
-    outputs.set(0, outFirst);
-    outputs.set(allShas.length - 1, outLast);
-    if (outFirst === outLast) {
-      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
-    } else {
-      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
+      const fingerprint = result.stdout.trim();
+      info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+      await collectGarbage();
+      return fingerprint;
+    } finally {
+      semaphore.release();
     }
-    await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
-    const relevant = [];
-    const irrelevant = [];
-    for (let i = 0;i < commits.length; i++) {
-      const isRelevant = outputs.get(i + 1) !== outputs.get(i);
-      if (isDebug()) {
-        debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
-      }
-      if (isRelevant) {
-        relevant.push(commits[i]);
-      } else {
-        irrelevant.push(commits[i]);
-      }
-    }
-    info(`build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` + `irrelevant commit(s) out of ${commits.length}`);
-    return { relevant, irrelevant };
-  } finally {
-    fs8.rmSync(tmpDir, { recursive: true, force: true });
+  };
+  const [outFirst, outLast] = await Promise.all([buildFn(allShas[0]), buildFn(allShas[allShas.length - 1])]);
+  const outputs = new Map;
+  outputs.set(0, outFirst);
+  outputs.set(allShas.length - 1, outLast);
+  if (outFirst === outLast) {
+    info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
+  } else {
+    info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
   }
+  await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
+  const relevant = [];
+  const irrelevant = [];
+  for (let i = 0;i < commits.length; i++) {
+    const isRelevant = outputs.get(i + 1) !== outputs.get(i);
+    if (isDebug()) {
+      debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+    }
+    if (isRelevant) {
+      relevant.push(commits[i]);
+    } else {
+      irrelevant.push(commits[i]);
+    }
+  }
+  info(`build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` + `irrelevant commit(s) out of ${commits.length}`);
+  return { relevant, irrelevant };
 }
 
 // src/main.ts
@@ -67101,7 +67058,7 @@ function getLockfileDiffs(before, after, afterRaw) {
   return Object.entries(after).filter(([_key, value]) => value.type === "github").filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev).map(([key, value]) => {
     const name = resolveInputPath(afterRaw, key);
     if (name === undefined) {
-      warning(`Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` + "falling back to the raw node key for build-filter's CFLC_INPUT_NAME, which will likely not " + "match any real --override-input target.");
+      warning(`Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` + "falling back to the raw node key, which will likely not match any real " + "--override-input target.");
     }
     return {
       ...value,

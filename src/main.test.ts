@@ -114,7 +114,7 @@ describe("run", () => {
         // build-filter's relevant/irrelevant split is information dependabot's own PR
         // description never has, so it's worth posting even when the redundant-compare-URL
         // skip would otherwise apply.
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         // dynamic import required: same reason as above.
         const { run } = await import("~/main");
         await run();
@@ -235,7 +235,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const relevantCommit = {
             sha: "sha0",
             message: "relevant commit",
@@ -264,7 +264,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const commits = [
             { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
             { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
@@ -290,7 +290,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const commits = [
             { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
             { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
@@ -328,7 +328,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const commits = [
             { sha: "sha0", message: "relevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
             { sha: "sha1", message: "irrelevant commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
@@ -353,7 +353,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
         const filtered = { relevant: commits, irrelevant: [] };
@@ -374,7 +374,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         buildFilterConcurrencyInput = "8";
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
@@ -397,7 +397,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         // buildFilterConcurrencyInput left at its beforeEach default: "".
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);
@@ -420,7 +420,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
         const commits = [
             { sha: "sha0", message: "first commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" },
             { sha: "sha1", message: "second commit", url: "https://github.com/NixOS/nixpkgs/commit/sha1" },
@@ -447,12 +447,13 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
 
         // Mirrors a real project where another input (e.g. devenv) locks its own nixpkgs
         // copy: Nix dedupes the project's own (non-`follows`) nixpkgs input into a
         // suffixed node key ("nixpkgs_2") even though flake.nix only ever calls it
-        // "nixpkgs" — that's the name build-filter's CFLC_INPUT_NAME needs to be.
+        // "nixpkgs" — that's the resolved name main.ts needs so a maintainer's build
+        // command can hardcode the right `--override-input <name>` target.
         const dedupedBefore = JSON.stringify({
             root: "root",
             nodes: {
@@ -496,7 +497,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
 
         const nestedBefore = JSON.stringify({
             root: "root",
@@ -537,7 +538,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+        buildFilterInput = 'nix build --override-input nixpkgs "$CFLC_INPUT"';
 
         // A node not reachable from root at all shouldn't normally happen, but the
         // resolver must degrade to the old (broken but non-crashing) behavior instead
@@ -583,7 +584,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix eval --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT_URL" --raw ".#drvPath"';
+        buildFilterInput = 'nix eval --override-input nixpkgs "$CFLC_INPUT" --raw ".#drvPath"';
 
         const withDirHostBefore = JSON.stringify({
             root: "root",
@@ -641,7 +642,7 @@ describe("run", () => {
             authorLogin: "someone",
             body: "",
         }));
-        buildFilterInput = 'nix eval --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT_URL" --raw ".#drvPath"';
+        buildFilterInput = 'nix eval --override-input nixpkgs "$CFLC_INPUT" --raw ".#drvPath"';
         // Default fixtures (BEFORE_LOCK/AFTER_LOCK) never set dir/host.
         const commits = [{ sha: "sha0", message: "a commit", url: "https://github.com/NixOS/nixpkgs/commit/sha0" }];
         compareCommitsMock.mockImplementation(async () => commits);

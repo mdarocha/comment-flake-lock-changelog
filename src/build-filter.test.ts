@@ -8,18 +8,20 @@ import { mockModule } from "~/utils/mockModule";
 type SpawnCall = { cmd: string; args: string[]; env: NodeJS.ProcessEnv | undefined };
 type FakeChild = EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
 
-// A build command that actually needs a local checkout — buildFilter.ts decides
-// whether to create git worktrees at all by checking whether buildCommand literally
-// references CFLC_INPUT_PATH.
-const PATH_BASED_BUILD_COMMAND = 'nix build --override-input "$CFLC_INPUT_NAME" "path:$CFLC_INPUT_PATH"';
+// Extracts the sha from a `github:owner/repo/<sha>[?...]` CFLC_INPUT value — the
+// only env var a build receives now, so it's the only way to tell which build a
+// spawn call belongs to.
+function shaFromCflcInput(cflcInput: string | undefined): string {
+    return cflcInput?.match(/^github:[^/]+\/[^/]+\/([^?]+)/)?.[1] ?? "";
+}
 
 let spawnCalls: SpawnCall[] = [];
 let moduleMock: Awaited<ReturnType<typeof mockModule>>;
-// Maps a checked-out sha to the fingerprint the fake build command should "print" to stdout.
+// Maps a build's sha to the fingerprint the fake build command should "print" to stdout.
 let outputsBySha: Record<string, string> = {};
 let gcExitCode = 0;
-// Manually-controlled build completions, keyed by CFLC_INPUT_REV. A build whose sha
-// has an entry here only "finishes" (emits close) once the test calls the resolver
+// Manually-controlled build completions, keyed by sha. A build whose sha has an
+// entry here only "finishes" (emits close) once the test calls the resolver
 // deferBuild() returned — used to prove real overlap/bounded concurrency rather than
 // relying on timing.
 let deferredBuilds: Record<string, Promise<void>> = {};
@@ -73,20 +75,11 @@ beforeEach(async () => {
         spawn: mock((cmd: string, args: string[] = [], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
             spawnCalls.push({ cmd, args, env: opts?.env });
 
-            if (cmd === "git" && args[0] === "--version") {
-                return fakeChild("git version 2.43.0", "", 0);
-            }
-            if (cmd === "git" && args[0] === "clone") {
-                return fakeChild("", "", 0);
-            }
-            if (cmd === "git" && args[0] === "worktree" && (args[1] === "add" || args[1] === "remove")) {
-                return fakeChild("", "", 0);
-            }
             if (cmd === "nix" && args[0] === "store" && args[1] === "gc") {
                 return gcExitCode === 0 ? fakeChild("", "", 0) : fakeChild("", "gc exploded", gcExitCode);
             }
             if (cmd === "sh") {
-                const sha = opts?.env?.["CFLC_INPUT_REV"] ?? "";
+                const sha = shaFromCflcInput(opts?.env?.["CFLC_INPUT"]);
                 return fakeChild(outputsBySha[sha] ?? "", "", 0, deferredBuilds[sha]);
             }
             return fakeChild("", "unexpected command", 1);
@@ -99,58 +92,6 @@ afterEach(() => {
 });
 
 describe("filterCommitsByBuildRelevance", () => {
-    test("checks git availability via `git --version`, not the external `which` command", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-
-        outputsBySha = { before: "out-a", c1: "out-a" };
-
-        await filterCommitsByBuildRelevance(
-            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            "echo ok",
-        );
-
-        expect(spawnCalls.some((c) => c.cmd === "which")).toBe(false);
-        expect(spawnCalls.some((c) => c.cmd === "git" && c.args[0] === "--version")).toBe(true);
-    });
-
-    test("throws a descriptive error when git is unavailable, without needing `which`", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-
-        moduleMock = await mockModule("node:child_process", () => ({
-            spawn: mock(() => fakeChild("", "not found", 1)),
-        }));
-
-        await expect(
-            filterCommitsByBuildRelevance(
-                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-                "echo ok",
-            ),
-        ).rejects.toThrow("git not found in PATH");
-    });
-
-    test("passes CFLC_INPUT_NAME so one build command can target the input being bisected", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-
-        outputsBySha = { before: "out-a", c1: "out-a", c2: "out-a" };
-
-        await filterCommitsByBuildRelevance(
-            [
-                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
-                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
-            ],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2", name: "flake-utils" },
-            'echo "$CFLC_INPUT_NAME"',
-        );
-
-        const buildCalls = spawnCalls.filter((c) => c.cmd === "sh");
-        expect(buildCalls.length).toBeGreaterThan(0);
-        for (const call of buildCalls) {
-            expect(call.env?.["CFLC_INPUT_NAME"]).toBe("flake-utils");
-        }
-    });
-
     test("classifies commits as relevant only when they change the build fingerprint", async () => {
         const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
 
@@ -162,8 +103,8 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2", name: "nixpkgs" },
-            'echo "$CFLC_INPUT_REV"',
+            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
+            'echo "$CFLC_INPUT"',
         );
 
         expect(relevant.map((c) => c.sha)).toEqual(["c1"]);
@@ -172,9 +113,9 @@ describe("filterCommitsByBuildRelevance", () => {
 
     // Regression test: same scenario as the classification test above, but pinned to
     // concurrency: 1 (also the default when omitted) — the exact behavior the codebase
-    // had before concurrent builds/worktrees existed. Same classification, same
-    // number of builds (endpoints "before"/"c2" plus the bisect midpoint "c1"), just
-    // reached through the new async/worktree code path instead of spawnSync.
+    // had before concurrent builds existed. Same classification, same number of builds
+    // (endpoints "before"/"c2" plus the bisect midpoint "c1"), just reached through the
+    // async code path instead of spawnSync.
     test("concurrency 1 (or omitted) matches the pre-concurrency sequential build count and classification", async () => {
         const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
         outputsBySha = { before: "out-a", c1: "out-b", c2: "out-b" };
@@ -184,8 +125,8 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2", name: "nixpkgs" },
-            'echo "$CFLC_INPUT_REV"',
+            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
+            'echo "$CFLC_INPUT"',
             { concurrency: 1 },
         );
 
@@ -213,8 +154,8 @@ describe("filterCommitsByBuildRelevance", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "head", name: "nixpkgs" },
-            'echo "$CFLC_INPUT_REV"',
+            { owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "head" },
+            'echo "$CFLC_INPUT"',
         );
 
         // Before the fix, the bisect never built "head" at all — its endpoint was
@@ -223,7 +164,7 @@ describe("filterCommitsByBuildRelevance", () => {
         // list is too incomplete for any single commit to take the blame, the endpoint
         // itself must be checked against the true head rather than the truncated list.
         expect(relevant).toEqual([]);
-        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]));
         expect(buildShas).toContain("head");
     });
 
@@ -234,32 +175,32 @@ describe("filterCommitsByBuildRelevance", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            'echo "$CFLC_INPUT_REV"',
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            'echo "$CFLC_INPUT"',
         );
 
-        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+        const buildShas = spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]));
         expect(buildShas.sort()).toEqual(["before", "c1"]);
     });
 });
 
-describe("filterCommitsByBuildRelevance CFLC_INPUT_URL", () => {
-    test("sets CFLC_INPUT_URL to a github: flake ref for every build", async () => {
+describe("filterCommitsByBuildRelevance CFLC_INPUT", () => {
+    test("sets CFLC_INPUT to a github: flake ref for every build", async () => {
         const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
         outputsBySha = { before: "out-a", c1: "out-a" };
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            'echo "$CFLC_INPUT_URL"',
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            'echo "$CFLC_INPUT"',
         );
 
         const buildCalls = spawnCalls.filter((c) => c.cmd === "sh");
         expect(buildCalls.length).toBeGreaterThan(0);
-        expect(buildCalls.find((c) => c.env?.["CFLC_INPUT_REV"] === "before")?.env?.["CFLC_INPUT_URL"]).toBe(
+        expect(buildCalls.find((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "before")?.env?.["CFLC_INPUT"]).toBe(
             "github:acme/flake-utils/before",
         );
-        expect(buildCalls.find((c) => c.env?.["CFLC_INPUT_REV"] === "c1")?.env?.["CFLC_INPUT_URL"]).toBe(
+        expect(buildCalls.find((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "c1")?.env?.["CFLC_INPUT"]).toBe(
             "github:acme/flake-utils/c1",
         );
     });
@@ -275,57 +216,14 @@ describe("filterCommitsByBuildRelevance CFLC_INPUT_URL", () => {
                 repo: "flake-utils",
                 beforeRev: "before",
                 rev: "c1",
-                name: "flake-utils",
                 host: "github.example.com",
                 dir: "sub dir",
             },
-            'echo "$CFLC_INPUT_URL"',
+            'echo "$CFLC_INPUT"',
         );
 
-        const buildCall = spawnCalls.find((c) => c.cmd === "sh" && c.env?.["CFLC_INPUT_REV"] === "c1");
-        expect(buildCall?.env?.["CFLC_INPUT_URL"]).toBe(
-            "github:acme/flake-utils/c1?host=github.example.com&dir=sub%20dir",
-        );
-    });
-});
-
-describe("filterCommitsByBuildRelevance lazy worktree checkout", () => {
-    test("skips git worktree entirely when the build command never references CFLC_INPUT_PATH", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-        outputsBySha = { before: "out-a", c1: "out-b" };
-
-        await filterCommitsByBuildRelevance(
-            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            'nix eval --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT_URL" --raw ".#packages.x86_64-linux.default.drvPath"',
-        );
-
-        expect(spawnCalls.some((c) => c.cmd === "git" && c.args[0] === "worktree")).toBe(false);
-
-        const buildCalls = spawnCalls.filter((c) => c.cmd === "sh");
-        expect(buildCalls.length).toBeGreaterThan(0);
-        for (const call of buildCalls) {
-            expect(call.env?.["CFLC_INPUT_PATH"]).toBe("");
-        }
-    });
-
-    test("still creates a worktree per build when the build command references CFLC_INPUT_PATH", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-        outputsBySha = { before: "out-a", c1: "out-b" };
-
-        await filterCommitsByBuildRelevance(
-            [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            PATH_BASED_BUILD_COMMAND,
-        );
-
-        const addCalls = spawnCalls.filter((c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "add");
-        expect(addCalls.length).toBeGreaterThan(0);
-
-        const buildCalls = spawnCalls.filter((c) => c.cmd === "sh");
-        for (const call of buildCalls) {
-            expect(call.env?.["CFLC_INPUT_PATH"]).not.toBe("");
-        }
+        const buildCall = spawnCalls.find((c) => c.cmd === "sh" && shaFromCflcInput(c.env?.["CFLC_INPUT"]) === "c1");
+        expect(buildCall?.env?.["CFLC_INPUT"]).toBe("github:acme/flake-utils/c1?host=github.example.com&dir=sub%20dir");
     });
 });
 
@@ -340,8 +238,8 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
         // so both are the endpoint builds, which always run via Promise.all.
         const resultPromise = filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            PATH_BASED_BUILD_COMMAND,
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            'echo "$CFLC_INPUT"',
             { concurrency: 2 },
         );
 
@@ -351,7 +249,7 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
         await waitFor(() => spawnCalls.filter((c) => c.cmd === "sh").length === 2);
         const buildShas = spawnCalls
             .filter((c) => c.cmd === "sh")
-            .map((c) => c.env?.["CFLC_INPUT_REV"])
+            .map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]))
             .sort();
         expect(buildShas).toEqual(["before", "c1"]);
 
@@ -386,18 +284,18 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
 
         const resultPromise = filterCommitsByBuildRelevance(
             commits,
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c9", name: "flake-utils" },
-            PATH_BASED_BUILD_COMMAND,
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c9" },
+            'echo "$CFLC_INPUT"',
             { concurrency: 2 },
         );
 
         await waitFor(() => {
-            const revs = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+            const revs = spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]));
             return revs.includes("c6") && (revs.includes("c1") || revs.includes("c3"));
         });
 
         const spawnedBeforeRelease = new Set(
-            spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]),
+            spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"])),
         );
         expect(spawnedBeforeRelease.has("c6")).toBe(true);
         // Exactly one of c1/c3 spawned — the other is still queued behind the
@@ -409,82 +307,13 @@ describe("filterCommitsByBuildRelevance concurrency", () => {
         // Releasing c6 frees a slot, letting the previously-queued one of {c1, c3} spawn.
         resolveC6();
         await waitFor(() => {
-            const revs = spawnCalls.filter((c) => c.cmd === "sh").map((c) => c.env?.["CFLC_INPUT_REV"]);
+            const revs = spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"]));
             return revs.includes("c1") && revs.includes("c3");
         });
 
         resolveC1();
         resolveC3();
         await resultPromise;
-    });
-
-    test("each concurrent build gets its own worktree directory, added and removed per build", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-        outputsBySha = { before: "out-a", c1: "out-b", c2: "out-c" };
-
-        await filterCommitsByBuildRelevance(
-            [
-                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
-                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
-            ],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2", name: "flake-utils" },
-            PATH_BASED_BUILD_COMMAND,
-            { concurrency: 2 },
-        );
-
-        const addCalls = spawnCalls.filter((c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "add");
-        const removeCalls = spawnCalls.filter(
-            (c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "remove",
-        );
-
-        // 3 builds total: both endpoints ("before", "c2") plus the bisect midpoint ("c1").
-        expect(addCalls).toHaveLength(3);
-        const addDirs = addCalls.map((c) => c.args[2]);
-        expect(new Set(addDirs).size).toBe(3);
-
-        expect(removeCalls).toHaveLength(3);
-        const removeDirs = removeCalls.map((c) => c.args[3]);
-        expect(new Set(removeDirs)).toEqual(new Set(addDirs));
-    });
-
-    test("removes a build's worktree even when the build command exits non-zero", async () => {
-        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
-        outputsBySha = { before: "out-a" };
-
-        moduleMock = await mockModule("node:child_process", () => ({
-            spawn: mock((cmd: string, args: string[] = [], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
-                spawnCalls.push({ cmd, args, env: opts?.env });
-                if (cmd === "git" && args[0] === "--version") return fakeChild("git version 2.43.0", "", 0);
-                if (cmd === "git" && args[0] === "clone") return fakeChild("", "", 0);
-                if (cmd === "git" && args[0] === "worktree") return fakeChild("", "", 0);
-                if (cmd === "nix") return fakeChild("", "", 0);
-                if (cmd === "sh") {
-                    const sha = opts?.env?.["CFLC_INPUT_REV"] ?? "";
-                    // "c1" is the failing build; everything else succeeds.
-                    return sha === "c1" ? fakeChild("", "build blew up", 1) : fakeChild(outputsBySha[sha] ?? "", "", 0);
-                }
-                return fakeChild("", "unexpected command", 1);
-            }),
-        }));
-
-        await expect(
-            filterCommitsByBuildRelevance(
-                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-                PATH_BASED_BUILD_COMMAND,
-            ),
-        ).rejects.toThrow("Build command failed at c1");
-
-        const c1WorktreeAdd = spawnCalls.find(
-            (c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "add" && c.args[3] === "c1",
-        );
-        expect(c1WorktreeAdd).toBeDefined();
-        const c1Dir = c1WorktreeAdd?.args[2];
-
-        const c1WorktreeRemove = spawnCalls.find(
-            (c) => c.cmd === "git" && c.args[0] === "worktree" && c.args[1] === "remove" && c.args[3] === c1Dir,
-        );
-        expect(c1WorktreeRemove).toBeDefined();
     });
 });
 
@@ -521,7 +350,7 @@ describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             "echo ok",
         );
 
@@ -535,7 +364,7 @@ describe("filterCommitsByBuildRelevance per-commit debug logging", () => {
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
             "echo ok",
         );
 
@@ -556,8 +385,8 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
                 { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
                 { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
             ],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2", name: "flake-utils" },
-            'echo "$CFLC_INPUT_REV"',
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c2" },
+            'echo "$CFLC_INPUT"',
         );
 
         const gcCalls = spawnCalls.filter((c) => c.cmd === "nix" && c.args[0] === "store" && c.args[1] === "gc");
@@ -567,17 +396,16 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
         expect(gcCalls).toHaveLength(3);
     });
 
-    test("runs nix store gc after every build even when checkout is skipped (no CFLC_INPUT_PATH usage)", async () => {
+    test("runs nix store gc after every build regardless of what the build command reads", async () => {
         const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
         outputsBySha = { before: "out-a", c1: "out-a" };
 
         await filterCommitsByBuildRelevance(
             [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
-            'echo "$CFLC_INPUT_URL"',
+            { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
+            'echo "$CFLC_INPUT"',
         );
 
-        expect(spawnCalls.some((c) => c.cmd === "git" && c.args[0] === "worktree")).toBe(false);
         const gcCalls = spawnCalls.filter((c) => c.cmd === "nix" && c.args[0] === "store" && c.args[1] === "gc");
         expect(gcCalls.length).toBeGreaterThan(0);
     });
@@ -600,7 +428,7 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
 
             const { relevant, irrelevant } = await filterCommitsByBuildRelevance(
                 [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
-                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1", name: "flake-utils" },
+                { owner: "acme", repo: "flake-utils", beforeRev: "before", rev: "c1" },
                 "echo ok",
             );
 
