@@ -22,6 +22,10 @@ interface Diff {
     // call, so it never produces a Diff. buildInputFlakeRef branches on this for
     // the correct override syntax.
     type: "github" | "git";
+    // The flake input's name (e.g. "nixpkgs"), exposed to the build command as
+    // CFLC_INPUT_NAME so a single command can stay input-agnostic across a PR
+    // that bumps more than one input.
+    name: string;
     owner: string;
     repo: string;
     beforeRev: string;
@@ -307,6 +311,7 @@ export async function filterCommitsByBuildRelevance(
                 env: {
                     ...process.env,
                     CFLC_INPUT: buildInputFlakeRef(diff, sha),
+                    CFLC_INPUT_NAME: diff.name,
                 },
             });
             if (result.exitCode !== 0) {

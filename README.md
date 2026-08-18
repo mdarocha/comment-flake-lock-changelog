@@ -76,8 +76,8 @@ output into a collapsed "did not affect the build output" section.
 from "didn't." It runs once per changed input, with `CFLC_INPUT` pointing at that input's commit each
 time (see [environment variables](#environment-variables)) — write `--override-input` for whichever
 input you actually want filtered. If a PR bumps more than one input, the same command runs once per
-input, so hardcoding one input's name (e.g. `nixpkgs`) produces a meaningless fingerprint for the
-others.
+input — use `CFLC_INPUT_NAME` to keep it input-agnostic instead of hardcoding one input's name (e.g.
+`nixpkgs`), which would produce a meaningless fingerprint for the others.
 
 ### Example usage
 
@@ -85,7 +85,7 @@ others.
 - uses: mdarocha/comment-flake-lock-changelog@main
   with:
     pull-request-number: ${{ github.event.pull_request.number }}
-    build-filter: 'nix build --override-input nixpkgs "$CFLC_INPUT" --print-out-paths'
+    build-filter: 'nix build --override-input "$CFLC_INPUT_NAME" "$CFLC_INPUT" --print-out-paths'
 ```
 
 This overrides the input currently being tested with a flake reference to the commit under test,
@@ -95,7 +95,8 @@ builds it, and prints the resulting store path, which the action uses as that co
 
 | Variable | Description |
 | :-- | :-- |
-| `CFLC_INPUT` | A flake reference for the commit under test, in the syntax matching the input's [locked type](#supported-input-types): `github:owner/repo/rev` (`?host=`/`&dir=` for Enterprise/subdirectory flakes) for `github`, or `git+https://github.com/owner/repo?rev=...` (`&dir=`/`&submodules=1` when set) for `git`. Pass directly to `--override-input` — your command doesn't need to know which. |
+| `CFLC_INPUT` | A flake reference for the commit under test, in the syntax matching the input's [locked type](#supported-input-types): `github:owner/repo/rev` (`?host=`/`&dir=` for Enterprise/subdirectory flakes) for `github`, or `git+https://github.com/owner/repo?rev=...` (`&dir=`/`&submodules=1` when set) for `git`. Pass directly to `--override-input`'s value. |
+| `CFLC_INPUT_NAME` | The flake input's name (e.g. `nixpkgs`), as it appears in `flake.nix`. Pass as `--override-input`'s target so a single command works across every changed input, instead of hardcoding one. |
 
 ### What your command should output
 

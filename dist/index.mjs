@@ -66959,7 +66959,8 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
         cwd: process.cwd(),
         env: {
           ...process.env,
-          CFLC_INPUT: buildInputFlakeRef(diff, sha)
+          CFLC_INPUT: buildInputFlakeRef(diff, sha),
+          CFLC_INPUT_NAME: diff.name
         }
       });
       if (result.exitCode !== 0) {
