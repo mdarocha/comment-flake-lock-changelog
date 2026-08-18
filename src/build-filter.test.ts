@@ -559,6 +559,128 @@ describe("filterCommitsByBuildRelevance GC always runs", () => {
             coreMock.dispose();
         }
     });
+
+    test("logs how long gc took after each build", async () => {
+        const logs: string[] = [];
+        const coreMock = await mockModule("@actions/core", () => ({
+            info: mock((message: string) => {
+                logs.push(message);
+            }),
+            warning: mock(() => {}),
+            isDebug: mock(() => false),
+            debug: mock(() => {}),
+        }));
+
+        try {
+            const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+            outputsBySha = { before: "out-a", c1: "out-a" };
+
+            await filterCommitsByBuildRelevance(
+                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+                {
+                    type: "github",
+                    name: "flake-utils",
+                    owner: "acme",
+                    repo: "flake-utils",
+                    beforeRev: "before",
+                    rev: "c1",
+                },
+                "echo ok",
+            );
+
+            // gc runs after every build (between bisect steps), so each of the two
+            // endpoint builds gets its own line.
+            expect(logs.filter((l) => /^build-filter: gc after (before|c1) took \d+s/.test(l))).toHaveLength(2);
+        } finally {
+            coreMock.dispose();
+        }
+    });
+});
+
+describe("filterCommitsByBuildRelevance heartbeat", () => {
+    test("logs progress while a build is still running", async () => {
+        const logs: string[] = [];
+        const coreMock = await mockModule("@actions/core", () => ({
+            info: mock((message: string) => {
+                logs.push(message);
+            }),
+            warning: mock(() => {}),
+            isDebug: mock(() => false),
+            debug: mock(() => {}),
+        }));
+
+        try {
+            const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+            const resolveBefore = deferBuild("before");
+            const resolveC1 = deferBuild("c1");
+            outputsBySha = { before: "out-a", c1: "out-b" };
+
+            const resultPromise = filterCommitsByBuildRelevance(
+                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+                {
+                    type: "github",
+                    name: "flake-utils",
+                    owner: "acme",
+                    repo: "flake-utils",
+                    beforeRev: "before",
+                    rev: "c1",
+                },
+                "echo ok",
+                { concurrency: 2, heartbeatIntervalMs: 10 },
+            );
+
+            // Both builds are held open, so the only thing that can advance the log
+            // is the heartbeat itself — exactly the "is it stuck?" case it exists for.
+            await waitFor(() => logs.some((l) => /^build-filter: still building (before|c1) \(\d+s elapsed\)/.test(l)));
+
+            resolveBefore();
+            resolveC1();
+            await resultPromise;
+        } finally {
+            coreMock.dispose();
+        }
+    });
+
+    test("stops heartbeating once a build finishes", async () => {
+        const logs: string[] = [];
+        const coreMock = await mockModule("@actions/core", () => ({
+            info: mock((message: string) => {
+                logs.push(message);
+            }),
+            warning: mock(() => {}),
+            isDebug: mock(() => false),
+            debug: mock(() => {}),
+        }));
+
+        try {
+            const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+            outputsBySha = { before: "out-a", c1: "out-a" };
+
+            await filterCommitsByBuildRelevance(
+                [{ sha: "c1", message: "commit 1", url: "https://example.com/c1" }],
+                {
+                    type: "github",
+                    name: "flake-utils",
+                    owner: "acme",
+                    repo: "flake-utils",
+                    beforeRev: "before",
+                    rev: "c1",
+                },
+                "echo ok",
+                { heartbeatIntervalMs: 10 },
+            );
+
+            // A leaked interval would keep appending "still ..." lines after the
+            // bisection resolved; nothing should arrive during this window.
+            const countAfterFinish = logs.filter((l) => l.includes("still ")).length;
+            const { promise, resolve } = Promise.withResolvers<void>();
+            setTimeout(resolve, 60);
+            await promise;
+            expect(logs.filter((l) => l.includes("still ")).length).toBe(countAfterFinish);
+        } finally {
+            coreMock.dispose();
+        }
+    });
 });
 
 describe("computeNixStateHash", () => {

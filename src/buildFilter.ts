@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "path";
 
 const LOG_FINGERPRINT_MAX_LENGTH = 200;
+const BUILD_HEARTBEAT_INTERVAL_MS = 30_000;
 
 function truncateForLog(value: string, maxLength = LOG_FINGERPRINT_MAX_LENGTH): string {
     if (value.length <= maxLength) {
@@ -179,15 +180,24 @@ export function resetNixStateHashCache(): void {
  * Each build's fetched revision becomes its own content-addressed store path, and
  * nothing dereferences the previous one — a bisection over a few dozen commits on
  * a large repo can pile up tens of GB before anything reclaims it. Running this
- * after every build bounds peak usage to roughly one revision per concurrent
- * build in flight, instead of the whole bisection's. Safe to call concurrently:
- * `nix store gc` needs no extra synchronization — Nix's own locking handles it.
+ * after every build — i.e. between bisect steps, not once at the end — bounds
+ * peak usage to roughly one revision per concurrent build in flight, instead of
+ * the whole bisection's. Safe to call concurrently: `nix store gc` needs no
+ * extra synchronization — Nix's own locking handles it.
  */
-async function collectGarbage(): Promise<void> {
+async function collectGarbage(sha: string): Promise<void> {
+    const startedAt = Date.now();
     const result = await spawnCmd(["nix", "store", "gc"]);
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
     if (result.exitCode !== 0) {
         core.warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
+        return;
     }
+    // `nix store gc` reports what it reclaimed on stderr; surface just that
+    // summary line so a slow GC between builds is visible as GC rather than as
+    // unexplained dead time in the log.
+    const freed = result.stderr.match(/^.*\bfreed\b.*$/m)?.[0].trim();
+    core.info(`build-filter: gc after ${sha} took ${elapsedSec}s${freed !== undefined ? ` — ${freed}` : ""}`);
 }
 
 /**
@@ -276,12 +286,15 @@ function buildInputFlakeRef(diff: Diff, sha: string): string {
  * auto-detected value (see detectConcurrency) rather than a fixed number, since
  * the right ceiling depends on the runner's CPU count. Higher values trade peak
  * disk usage for wall-clock time on large bisections.
+ * @param options.heartbeatIntervalMs - How often a still-running build logs a
+ * progress line (see buildFn). Defaults to BUILD_HEARTBEAT_INTERVAL_MS; exposed
+ * mainly so tests don't have to wait out the real interval.
  */
 export async function filterCommitsByBuildRelevance(
     commits: Commit[],
     diff: Diff,
     buildCommand: string,
-    options?: { concurrency?: number },
+    options?: { concurrency?: number; heartbeatIntervalMs?: number },
 ): Promise<{ relevant: Commit[]; irrelevant: Commit[] }> {
     core.info(
         `build-filter: ${diff.owner}/${diff.repo} \u2014 evaluating ${commits.length} commit(s) between ` +
@@ -301,26 +314,42 @@ export async function filterCommitsByBuildRelevance(
 
     const cmdParts = ["sh", "-c", buildCommand];
     const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
+    const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? BUILD_HEARTBEAT_INTERVAL_MS;
 
     const buildFn = async (sha: string): Promise<string> => {
         await semaphore.acquire();
         try {
             core.info(`build-filter: building ${sha}`);
-            const result = await spawnCmd(cmdParts, {
-                cwd: process.cwd(),
-                env: {
-                    ...process.env,
-                    CFLC_INPUT: buildInputFlakeRef(diff, sha),
-                    CFLC_INPUT_NAME: diff.name,
-                },
-            });
-            if (result.exitCode !== 0) {
-                throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+            // spawnCmd only surfaces a child's output once it exits, so a slow
+            // build (a cold nixpkgs fetch+eval, a heavy derivation) or a slow gc
+            // otherwise looks identical to a hang from the log alone. Covers both
+            // phases, reporting which one is currently running.
+            const startedAt = Date.now();
+            let phase = "building";
+            const heartbeat = setInterval(() => {
+                const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+                core.info(`build-filter: still ${phase} ${sha} (${elapsedSec}s elapsed)`);
+            }, heartbeatIntervalMs);
+            try {
+                const result = await spawnCmd(cmdParts, {
+                    cwd: process.cwd(),
+                    env: {
+                        ...process.env,
+                        CFLC_INPUT: buildInputFlakeRef(diff, sha),
+                        CFLC_INPUT_NAME: diff.name,
+                    },
+                });
+                if (result.exitCode !== 0) {
+                    throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+                }
+                const fingerprint = result.stdout.trim();
+                core.info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+                phase = "gc'ing after";
+                await collectGarbage(sha);
+                return fingerprint;
+            } finally {
+                clearInterval(heartbeat);
             }
-            const fingerprint = result.stdout.trim();
-            core.info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
-            await collectGarbage();
-            return fingerprint;
         } finally {
             semaphore.release();
         }

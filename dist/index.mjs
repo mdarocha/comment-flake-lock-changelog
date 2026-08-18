@@ -66803,6 +66803,7 @@ import * as crypto4 from "node:crypto";
 import * as os8 from "node:os";
 import * as path12 from "path";
 var LOG_FINGERPRINT_MAX_LENGTH = 200;
+var BUILD_HEARTBEAT_INTERVAL_MS = 30000;
 function truncateForLog(value, maxLength = LOG_FINGERPRINT_MAX_LENGTH) {
   if (value.length <= maxLength) {
     return value;
@@ -66900,11 +66901,16 @@ function computeNixStateHash(cwd = process.cwd()) {
   cachedNixStateHash = hash.digest("hex");
   return cachedNixStateHash;
 }
-async function collectGarbage() {
+async function collectGarbage(sha) {
+  const startedAt = Date.now();
   const result = await spawnCmd(["nix", "store", "gc"]);
+  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
   if (result.exitCode !== 0) {
     warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
+    return;
   }
+  const freed = result.stderr.match(/^.*\bfreed\b.*$/m)?.[0].trim();
+  info(`build-filter: gc after ${sha} took ${elapsedSec}s${freed !== undefined ? ` — ${freed}` : ""}`);
 }
 async function bisect(lo, hi, outLo, outHi, allShas, outputs, buildFn) {
   if (outLo === outHi) {
@@ -66951,25 +66957,37 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
   const allShas = lastCommitSha === diff.rev ? [diff.beforeRev, ...commits.map((c) => c.sha)] : [diff.beforeRev, ...commits.map((c) => c.sha), diff.rev];
   const cmdParts = ["sh", "-c", buildCommand];
   const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
+  const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? BUILD_HEARTBEAT_INTERVAL_MS;
   const buildFn = async (sha) => {
     await semaphore.acquire();
     try {
       info(`build-filter: building ${sha}`);
-      const result = await spawnCmd(cmdParts, {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          CFLC_INPUT: buildInputFlakeRef(diff, sha),
-          CFLC_INPUT_NAME: diff.name
+      const startedAt = Date.now();
+      let phase = "building";
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+        info(`build-filter: still ${phase} ${sha} (${elapsedSec}s elapsed)`);
+      }, heartbeatIntervalMs);
+      try {
+        const result = await spawnCmd(cmdParts, {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            CFLC_INPUT: buildInputFlakeRef(diff, sha),
+            CFLC_INPUT_NAME: diff.name
+          }
+        });
+        if (result.exitCode !== 0) {
+          throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
         }
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
+        const fingerprint = result.stdout.trim();
+        info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
+        phase = "gc'ing after";
+        await collectGarbage(sha);
+        return fingerprint;
+      } finally {
+        clearInterval(heartbeat);
       }
-      const fingerprint = result.stdout.trim();
-      info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
-      await collectGarbage();
-      return fingerprint;
     } finally {
       semaphore.release();
     }
