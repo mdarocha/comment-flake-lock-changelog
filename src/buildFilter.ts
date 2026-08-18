@@ -44,12 +44,16 @@ interface Diff {
 
 function spawnCmd(
     cmd: string[],
-    opts?: { cwd?: string; env?: NodeJS.ProcessEnv },
+    opts?: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const { promise, resolve } = Promise.withResolvers<{ stdout: string; stderr: string; exitCode: number }>();
     const child = spawn(cmd[0], cmd.slice(1), {
         ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(opts?.env !== undefined ? { env: opts.env } : {}),
+        // Kills the child if the bisection is torn down, so no build outlives the
+        // call that started it. An abort surfaces through the `error` handler below
+        // as a non-zero exit rather than an unsettled promise.
+        ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
         stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -185,9 +189,9 @@ export function resetNixStateHashCache(): void {
  * the whole bisection's. Safe to call concurrently: `nix store gc` needs no
  * extra synchronization — Nix's own locking handles it.
  */
-async function collectGarbage(sha: string): Promise<void> {
+async function collectGarbage(sha: string, signal?: AbortSignal): Promise<void> {
     const startedAt = Date.now();
-    const result = await spawnCmd(["nix", "store", "gc"]);
+    const result = await spawnCmd(["nix", "store", "gc"], signal !== undefined ? { signal } : undefined);
     const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
     if (result.exitCode !== 0) {
         core.warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
@@ -315,10 +319,21 @@ export async function filterCommitsByBuildRelevance(
     const cmdParts = ["sh", "-c", buildCommand];
     const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
     const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? BUILD_HEARTBEAT_INTERVAL_MS;
+    // Bisect branches below a midpoint run concurrently via Promise.all, which
+    // rejects on the first failure but never cancels its siblings. Without this,
+    // a thrown build left the losing branches running — still spawning builds and
+    // logging long after the caller had given up and posted its comment.
+    const controller = new AbortController();
 
-    const buildFn = async (sha: string): Promise<string> => {
+    const runBuild = async (sha: string): Promise<string> => {
+        if (controller.signal.aborted) {
+            throw new Error(`build-filter: aborted before building ${sha}`);
+        }
         await semaphore.acquire();
         try {
+            if (controller.signal.aborted) {
+                throw new Error(`build-filter: aborted before building ${sha}`);
+            }
             core.info(`build-filter: building ${sha}`);
             // spawnCmd only surfaces a child's output once it exits, so a slow
             // build (a cold nixpkgs fetch+eval, a heavy derivation) or a slow gc
@@ -338,6 +353,7 @@ export async function filterCommitsByBuildRelevance(
                         CFLC_INPUT: buildInputFlakeRef(diff, sha),
                         CFLC_INPUT_NAME: diff.name,
                     },
+                    signal: controller.signal,
                 });
                 if (result.exitCode !== 0) {
                     throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
@@ -345,7 +361,7 @@ export async function filterCommitsByBuildRelevance(
                 const fingerprint = result.stdout.trim();
                 core.info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
                 phase = "gc'ing after";
-                await collectGarbage(sha);
+                await collectGarbage(sha, controller.signal);
                 return fingerprint;
             } finally {
                 clearInterval(heartbeat);
@@ -355,48 +371,90 @@ export async function filterCommitsByBuildRelevance(
         }
     };
 
-    // Build at endpoints — independent of each other, so run them concurrently
-    // (still subject to the same concurrency limit as every other build).
-    const [outFirst, outLast] = await Promise.all([buildFn(allShas[0]), buildFn(allShas[allShas.length - 1])]);
-
-    const outputs = new Map<number, string>();
-    outputs.set(0, outFirst);
-    outputs.set(allShas.length - 1, outLast);
-
-    if (outFirst === outLast) {
-        core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
-    } else {
-        core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
-    }
-
-    // Bisect to find all change boundaries
-    await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
-
-    // Classify commits: commit[i] is relevant if outputs[i+1] !== outputs[i]
-    const relevant: Commit[] = [];
-    const irrelevant: Commit[] = [];
-
-    // Classification is O(N) (vs O(log N) for the builds above), which can mean
-    // thousands of lines for a large range. core.debug/info write to stdout
-    // unconditionally regardless of level, so a burst that size risks crashing the
-    // action with EPIPE — gate on isDebug() ourselves so a normal run emits none of
-    // this; the summary line below always reports totals.
-    for (let i = 0; i < commits.length; i++) {
-        const isRelevant = outputs.get(i + 1) !== outputs.get(i);
-        if (core.isDebug()) {
-            core.debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+    // A commit that doesn't evaluate is a fact about that commit, not a reason to
+    // throw away the whole bisection: over a range this size (a broken tree, a
+    // staging merge mid-flight) at least one is close to inevitable, and aborting
+    // means falling back to showing every commit unfiltered. Treat it as its own
+    // distinct fingerprint instead, so it reads as a change on both sides and the
+    // commit is conservatively kept in the changelog, while the rest of the range
+    // still gets filtered. The NUL prefix can't collide with a real fingerprint,
+    // which is a command's trimmed stdout.
+    let failedBuilds = 0;
+    const buildFn = async (sha: string): Promise<string> => {
+        try {
+            return await runBuild(sha);
+        } catch (e) {
+            if (controller.signal.aborted) {
+                throw e;
+            }
+            failedBuilds++;
+            const reason = truncateForLog(e instanceof Error ? e.message : String(e));
+            core.warning(
+                `build-filter: build failed at ${sha}; keeping the commit in the changelog and continuing: ${reason}`,
+            );
+            return `\0build-failed:${sha}`;
         }
-        if (isRelevant) {
-            relevant.push(commits[i]);
+    };
+
+    try {
+        // Build at endpoints — independent of each other, so run them concurrently
+        // (still subject to the same concurrency limit as every other build). These
+        // two use runBuild rather than buildFn, so a failure here is fatal: both
+        // endpoints failing means the build command itself is broken (a bad
+        // --override-input, a missing attribute), and tolerating that would bisect
+        // the entire range building nothing but errors.
+        const [outFirst, outLast] = await Promise.all([runBuild(allShas[0]), runBuild(allShas[allShas.length - 1])]);
+
+        const outputs = new Map<number, string>();
+        outputs.set(0, outFirst);
+        outputs.set(allShas.length - 1, outLast);
+
+        if (outFirst === outLast) {
+            core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
         } else {
-            irrelevant.push(commits[i]);
+            core.info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
         }
+
+        // Bisect to find all change boundaries
+        await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
+
+        if (failedBuilds > 0) {
+            core.warning(
+                `build-filter: ${failedBuilds} build(s) failed; those commits are reported as affecting the ` +
+                    "build output because it couldn't be shown otherwise.",
+            );
+        }
+
+        // Classify commits: commit[i] is relevant if outputs[i+1] !== outputs[i]
+        const relevant: Commit[] = [];
+        const irrelevant: Commit[] = [];
+
+        // Classification is O(N) (vs O(log N) for the builds above), which can mean
+        // thousands of lines for a large range. core.debug/info write to stdout
+        // unconditionally regardless of level, so a burst that size risks crashing the
+        // action with EPIPE — gate on isDebug() ourselves so a normal run emits none of
+        // this; the summary line below always reports totals.
+        for (let i = 0; i < commits.length; i++) {
+            const isRelevant = outputs.get(i + 1) !== outputs.get(i);
+            if (core.isDebug()) {
+                core.debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+            }
+            if (isRelevant) {
+                relevant.push(commits[i]);
+            } else {
+                irrelevant.push(commits[i]);
+            }
+        }
+
+        core.info(
+            `build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` +
+                `irrelevant commit(s) out of ${commits.length}`,
+        );
+
+        return { relevant, irrelevant };
+    } finally {
+        // Whether this returned or threw, nothing may still be building: kills any
+        // in-flight child and stops queued builds from starting.
+        controller.abort();
     }
-
-    core.info(
-        `build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` +
-            `irrelevant commit(s) out of ${commits.length}`,
-    );
-
-    return { relevant, irrelevant };
 }

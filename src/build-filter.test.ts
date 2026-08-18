@@ -30,6 +30,9 @@ let gcExitCode = 0;
 // deferBuild() returned — used to prove real overlap/bounded concurrency rather than
 // relying on timing.
 let deferredBuilds: Record<string, Promise<void>> = {};
+// Shas whose build command should exit non-zero, simulating a commit that doesn't
+// evaluate (a broken tree, a staging merge mid-flight).
+let failingShas: Set<string> = new Set();
 
 function deferBuild(sha: string): () => void {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -75,6 +78,7 @@ beforeEach(async () => {
     outputsBySha = {};
     gcExitCode = 0;
     deferredBuilds = {};
+    failingShas = new Set();
 
     moduleMock = await mockModule("node:child_process", () => ({
         spawn: mock((cmd: string, args: string[] = [], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
@@ -85,6 +89,9 @@ beforeEach(async () => {
             }
             if (cmd === "sh") {
                 const sha = shaFromCflcInput(opts?.env?.["CFLC_INPUT"]);
+                if (failingShas.has(sha)) {
+                    return fakeChild("", `eval failed at ${sha}`, 1, deferredBuilds[sha]);
+                }
                 return fakeChild(outputsBySha[sha] ?? "", "", 0, deferredBuilds[sha]);
             }
             return fakeChild("", "unexpected command", 1);
@@ -794,5 +801,89 @@ describe("computeNixStateHash", () => {
         const second = computeNixStateHash(tmpDir);
 
         expect(second).toBe(first);
+    });
+});
+
+describe("filterCommitsByBuildRelevance build failures", () => {
+    test("a commit that fails to build is kept as relevant without aborting the bisection", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+
+        // Endpoints differ so the range actually gets bisected, and the midpoint that
+        // bisection lands on (c2) doesn't evaluate. c1 still shares the base
+        // fingerprint, so it must still come back irrelevant: one bad commit must not
+        // cost the whole range its filtering.
+        outputsBySha = { before: "out-a", c1: "out-a", c3: "out-b" };
+        failingShas = new Set(["c2"]);
+
+        const { relevant, irrelevant } = await filterCommitsByBuildRelevance(
+            [
+                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+                { sha: "c3", message: "commit 3", url: "https://example.com/c3" },
+            ],
+            { type: "github", name: "nixpkgs", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c3" },
+            'echo "$CFLC_INPUT"',
+        );
+
+        expect(relevant.map((c) => c.sha)).toContain("c2");
+        expect(irrelevant.map((c) => c.sha)).toContain("c1");
+        expect(relevant.length + irrelevant.length).toBe(3);
+    });
+
+    test("an endpoint that fails to build is fatal and starts no bisect builds", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+
+        // A failing endpoint means the build command itself is broken, so bisecting
+        // the range would just repeat the same error thousands of times.
+        outputsBySha = { c1: "out-a", c2: "out-a", c3: "out-b" };
+        failingShas = new Set(["before"]);
+
+        await expect(
+            filterCommitsByBuildRelevance(
+                [
+                    { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                    { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+                    { sha: "c3", message: "commit 3", url: "https://example.com/c3" },
+                ],
+                { type: "github", name: "nixpkgs", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c3" },
+                'echo "$CFLC_INPUT"',
+            ),
+        ).rejects.toThrow(/before/);
+
+        // Only the two endpoints ever ran: no midpoint build was started, and none
+        // started after the rejection either.
+        const shasBuilt = new Set(
+            spawnCalls.filter((c) => c.cmd === "sh").map((c) => shaFromCflcInput(c.env?.["CFLC_INPUT"])),
+        );
+        expect(shasBuilt).toEqual(new Set(["before", "c3"]));
+    });
+
+    test("no build is left running once the bisection has failed", async () => {
+        const { filterCommitsByBuildRelevance } = await import("~/buildFilter");
+
+        // The surviving endpoint is held open past the other endpoint's failure. Once
+        // the call rejects, releasing it must not let any further build start:
+        // previously the losing Promise.all branches kept spawning builds long after
+        // the caller had given up.
+        outputsBySha = { before: "out-a", c1: "out-a", c2: "out-b" };
+        failingShas = new Set(["before"]);
+        const resolveC2 = deferBuild("c2");
+
+        const pending = filterCommitsByBuildRelevance(
+            [
+                { sha: "c1", message: "commit 1", url: "https://example.com/c1" },
+                { sha: "c2", message: "commit 2", url: "https://example.com/c2" },
+            ],
+            { type: "github", name: "nixpkgs", owner: "NixOS", repo: "nixpkgs", beforeRev: "before", rev: "c2" },
+            'echo "$CFLC_INPUT"',
+        );
+
+        await expect(pending).rejects.toThrow(/before/);
+        const buildsAtRejection = spawnCalls.filter((c) => c.cmd === "sh").length;
+
+        resolveC2();
+        await waitFor(() => true);
+
+        expect(spawnCalls.filter((c) => c.cmd === "sh")).toHaveLength(buildsAtRejection);
     });
 });

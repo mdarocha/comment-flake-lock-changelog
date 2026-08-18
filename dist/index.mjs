@@ -66815,6 +66815,7 @@ function spawnCmd(cmd, opts) {
   const child2 = spawn2(cmd[0], cmd.slice(1), {
     ...opts?.cwd !== undefined ? { cwd: opts.cwd } : {},
     ...opts?.env !== undefined ? { env: opts.env } : {},
+    ...opts?.signal !== undefined ? { signal: opts.signal } : {},
     stdio: ["ignore", "pipe", "pipe"]
   });
   let stdout = "";
@@ -66901,9 +66902,9 @@ function computeNixStateHash(cwd = process.cwd()) {
   cachedNixStateHash = hash.digest("hex");
   return cachedNixStateHash;
 }
-async function collectGarbage(sha) {
+async function collectGarbage(sha, signal) {
   const startedAt = Date.now();
-  const result = await spawnCmd(["nix", "store", "gc"]);
+  const result = await spawnCmd(["nix", "store", "gc"], signal !== undefined ? { signal } : undefined);
   const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
   if (result.exitCode !== 0) {
     warning(`build-filter: \`nix store gc\` failed (continuing anyway): ${result.stderr}`);
@@ -66958,9 +66959,16 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
   const cmdParts = ["sh", "-c", buildCommand];
   const semaphore = new Semaphore(options?.concurrency ?? detectConcurrency());
   const heartbeatIntervalMs = options?.heartbeatIntervalMs ?? BUILD_HEARTBEAT_INTERVAL_MS;
-  const buildFn = async (sha) => {
+  const controller = new AbortController;
+  const runBuild = async (sha) => {
+    if (controller.signal.aborted) {
+      throw new Error(`build-filter: aborted before building ${sha}`);
+    }
     await semaphore.acquire();
     try {
+      if (controller.signal.aborted) {
+        throw new Error(`build-filter: aborted before building ${sha}`);
+      }
       info(`build-filter: building ${sha}`);
       const startedAt = Date.now();
       let phase = "building";
@@ -66975,7 +66983,8 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
             ...process.env,
             CFLC_INPUT: buildInputFlakeRef(diff, sha),
             CFLC_INPUT_NAME: diff.name
-          }
+          },
+          signal: controller.signal
         });
         if (result.exitCode !== 0) {
           throw new Error(`Build command failed at ${sha}: ${result.stderr}`);
@@ -66983,7 +66992,7 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
         const fingerprint = result.stdout.trim();
         info(`build-filter: ${sha} fingerprint: ${truncateForLog(fingerprint)}`);
         phase = "gc'ing after";
-        await collectGarbage(sha);
+        await collectGarbage(sha, controller.signal);
         return fingerprint;
       } finally {
         clearInterval(heartbeat);
@@ -66992,31 +67001,52 @@ async function filterCommitsByBuildRelevance(commits, diff, buildCommand, option
       semaphore.release();
     }
   };
-  const [outFirst, outLast] = await Promise.all([buildFn(allShas[0]), buildFn(allShas[allShas.length - 1])]);
-  const outputs = new Map;
-  outputs.set(0, outFirst);
-  outputs.set(allShas.length - 1, outLast);
-  if (outFirst === outLast) {
-    info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
-  } else {
-    info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
-  }
-  await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
-  const relevant = [];
-  const irrelevant = [];
-  for (let i = 0;i < commits.length; i++) {
-    const isRelevant = outputs.get(i + 1) !== outputs.get(i);
-    if (isDebug()) {
-      debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+  let failedBuilds = 0;
+  const buildFn = async (sha) => {
+    try {
+      return await runBuild(sha);
+    } catch (e) {
+      if (controller.signal.aborted) {
+        throw e;
+      }
+      failedBuilds++;
+      const reason = truncateForLog(e instanceof Error ? e.message : String(e));
+      warning(`build-filter: build failed at ${sha}; keeping the commit in the changelog and continuing: ${reason}`);
+      return `\x00build-failed:${sha}`;
     }
-    if (isRelevant) {
-      relevant.push(commits[i]);
+  };
+  try {
+    const [outFirst, outLast] = await Promise.all([runBuild(allShas[0]), runBuild(allShas[allShas.length - 1])]);
+    const outputs = new Map;
+    outputs.set(0, outFirst);
+    outputs.set(allShas.length - 1, outLast);
+    if (outFirst === outLast) {
+      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints produced identical fingerprints`);
     } else {
-      irrelevant.push(commits[i]);
+      info(`build-filter: ${diff.owner}/${diff.repo} — endpoints differ, bisecting to find boundaries`);
     }
+    await bisect(0, allShas.length - 1, outFirst, outLast, allShas, outputs, buildFn);
+    if (failedBuilds > 0) {
+      warning(`build-filter: ${failedBuilds} build(s) failed; those commits are reported as affecting the ` + "build output because it couldn't be shown otherwise.");
+    }
+    const relevant = [];
+    const irrelevant = [];
+    for (let i = 0;i < commits.length; i++) {
+      const isRelevant = outputs.get(i + 1) !== outputs.get(i);
+      if (isDebug()) {
+        debug(`build-filter: ${commits[i].sha} classified as ${isRelevant ? "relevant" : "irrelevant"}`);
+      }
+      if (isRelevant) {
+        relevant.push(commits[i]);
+      } else {
+        irrelevant.push(commits[i]);
+      }
+    }
+    info(`build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` + `irrelevant commit(s) out of ${commits.length}`);
+    return { relevant, irrelevant };
+  } finally {
+    controller.abort();
   }
-  info(`build-filter: ${diff.owner}/${diff.repo} — ${relevant.length} relevant, ${irrelevant.length} ` + `irrelevant commit(s) out of ${commits.length}`);
-  return { relevant, irrelevant };
 }
 
 // src/main.ts
