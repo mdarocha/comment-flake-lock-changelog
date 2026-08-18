@@ -17,11 +17,36 @@ import {
 } from "~/api";
 import { computeNixStateHash, filterCommitsByBuildRelevance } from "~/buildFilter";
 
-interface LockfileItem {
+// Raw `locked` field of a flake.lock node, straight from JSON — loosely typed
+// since only a subset of fields is present, depending on the fetcher type.
+// `owner`/`repo`/`host` are "github"-type; `url`/`submodules` are "git"-type.
+// See toLockfile for which locked types are actually processed.
+interface RawLockedNode {
     type: string;
+    owner?: string;
+    repo?: string;
+    rev?: string;
+    dir?: string;
+    host?: string;
+    url?: string;
+    submodules?: boolean;
+}
+
+// Normalized shape every Lockfile entry is guaranteed to have, regardless of its
+// original locked type. toLockfile is the only producer, and only once owner/
+// repo/rev are known for certain — for "git", that means parsing a github.com URL.
+interface LockfileItem {
+    type: "github" | "git";
     owner: string;
     repo: string;
     rev: string;
+    // Subdirectory flake, for either type. Dropping it silently would produce a
+    // wrong CFLC_INPUT override for a repo that sets it.
+    dir?: string;
+    // "github" type only: a non-default (GitHub Enterprise) host.
+    host?: string;
+    // "git" type only: whether the locked node fetches submodules.
+    submodules?: boolean;
 }
 
 type Lockfile = Record<string, LockfileItem>;
@@ -30,7 +55,7 @@ type Commit = { sha: string; message: string; url: string };
 // A raw flake.lock node's `inputs` entries are either a direct reference to another
 // node (by key) or a `follows` alias, encoded as the absolute input path (names, not
 // node keys) from the lock file's root — see resolveInputPath below.
-type RawLockNode = { inputs?: Record<string, string | string[]>; locked?: LockfileItem };
+type RawLockNode = { inputs?: Record<string, string | string[]>; locked?: RawLockedNode };
 interface RawLockfile {
     root: string;
     nodes: Record<string, RawLockNode>;
@@ -44,29 +69,102 @@ function parseRawLockfile(content: string): RawLockfile {
     return { root: data.root ?? "root", nodes: data.nodes ?? {} };
 }
 
+/**
+ * Extracts `{owner, repo}` from a git remote URL when it points at github.com —
+ * the only host `compareCommits` (a GitHub REST API call) can diff. Other hosts
+ * (GitLab, sourcehut, self-hosted) have no equivalent endpoint, so they're left
+ * undiffable.
+ *
+ * TODO: support other git hosts, likely via a generic `git log`-based diff instead
+ * of a REST API per host.
+ *
+ * Handles the URL forms Nix writes into flake.lock: `https://github.com/owner/repo
+ * [.git]`, `ssh://git@github.com/owner/repo[.git]`, and (defensively) scp-like
+ * `git@github.com:owner/repo[.git]`. Returns undefined otherwise.
+ */
+function extractGithubOwnerRepo(url: string): { owner: string; repo: string } | undefined {
+    let normalized = url;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+        const scpMatch = /^(?:([^/@]+)@)?([^/@:]+):(.+)$/.exec(normalized);
+        if (scpMatch) {
+            const [, userAt, host, rest] = scpMatch;
+            normalized = `ssh://${userAt !== undefined ? `${userAt}@` : ""}${host}/${rest}`;
+        }
+    }
+    let parsed: URL;
+    try {
+        parsed = new URL(normalized);
+    } catch {
+        return undefined;
+    }
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+        return undefined;
+    }
+    const segments = parsed.pathname.split("/").filter((s) => s.length > 0);
+    if (segments.length < 2) {
+        return undefined;
+    }
+    const [owner, repoRaw] = segments;
+    const repo = repoRaw.endsWith(".git") ? repoRaw.slice(0, -4) : repoRaw;
+    return { owner, repo };
+}
+
+/**
+ * Normalizes every diffable flake.lock node into a uniform `{owner, repo, rev, ...}`
+ * shape. Only two locked types produce an entry:
+ *
+ * - `"github"`: fields come straight from the locked node.
+ * - `"git"`, when its `url` resolves to a github.com repo (see
+ *   `extractGithubOwnerRepo`) — covers inputs declared as
+ *   `git+https://github.com/owner/repo` instead of the `github:` shorthand.
+ *
+ * Every other locked type, or a `"git"` node hosted anywhere but github.com, is
+ * skipped: none of them have a commit history this action's GitHub-based diffing
+ * can compare.
+ */
 function toLockfile(raw: RawLockfile): Lockfile {
     return Object.entries(raw.nodes)
         .filter(([key]) => key !== raw.root)
-        .filter(([, node]) => node.locked?.type === "github")
         .reduce<Lockfile>((acc, [key, node]) => {
-            const locked = node.locked as LockfileItem;
-            acc[key] = { type: locked.type, owner: locked.owner, repo: locked.repo, rev: locked.rev };
+            const locked = node.locked;
+            if (locked?.rev === undefined) {
+                return acc;
+            }
+            if (locked.type === "github" && locked.owner !== undefined && locked.repo !== undefined) {
+                acc[key] = {
+                    type: "github",
+                    owner: locked.owner,
+                    repo: locked.repo,
+                    rev: locked.rev,
+                    ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
+                    ...(locked.host !== undefined ? { host: locked.host } : {}),
+                };
+            } else if (locked.type === "git" && locked.url !== undefined) {
+                const ownerRepo = extractGithubOwnerRepo(locked.url);
+                if (ownerRepo !== undefined) {
+                    acc[key] = {
+                        type: "git",
+                        owner: ownerRepo.owner,
+                        repo: ownerRepo.repo,
+                        rev: locked.rev,
+                        ...(locked.dir !== undefined ? { dir: locked.dir } : {}),
+                        ...(locked.submodules !== undefined ? { submodules: locked.submodules } : {}),
+                    };
+                }
+            }
             return acc;
         }, {});
 }
 
 /**
- * Resolve the flake input path (usable with `nix flake --override-input <path> <url>`)
- * that reaches a given flake.lock node, by walking `inputs` references starting at the
- * lock file's root. flake.lock `nodes` keys are Nix's own internal, deduplicated node
- * identifiers — e.g. the same nixpkgs input ends up keyed "nixpkgs_2", "nixpkgs_3", etc.
- * whenever it's also locked (without `follows`) by another input in the graph, such as
- * devenv/flake-parts/disko each pulling their own copy. Those keys are not valid
- * `--override-input` targets on their own; the real path is whatever name(s) the
- * consuming flake's own `inputs` (and, transitively, each input's `inputs`) use to reach
- * that node. Returns undefined if no such path exists (e.g. the node isn't reachable
- * from root at all, which shouldn't normally happen for an input flake.lock actually
- * depends on).
+ * Resolves the flake input path (usable with `--override-input <path> <url>`) that
+ * reaches a given flake.lock node, by walking `inputs` references from the lock
+ * file's root. `nodes` keys are Nix's own deduplicated internal identifiers — e.g.
+ * the same nixpkgs input can end up keyed "nixpkgs_2" when another input in the
+ * graph (devenv, flake-parts, disko, ...) also locks it without `follows`. Those
+ * keys aren't valid override targets; the real path is whatever name(s) the
+ * consuming flake's `inputs` actually use to reach that node. Returns undefined if
+ * the node isn't reachable from root at all.
  */
 function resolveInputPath(lockfile: RawLockfile, targetKey: string): string | undefined {
     const { nodes, root } = lockfile;
@@ -128,16 +226,18 @@ function getLockfileDiffs(
     after: Lockfile,
     afterRaw: RawLockfile,
 ): Array<LockfileItem & { beforeRev: string; name: string }> {
+    // No type filter needed here — toLockfile already only ever produces entries
+    // for the two diffable locked types ("github", and "git" resolved to a
+    // github.com repo), so every entry in `after` is already eligible.
     return Object.entries(after)
-        .filter(([_key, value]) => value.type === "github")
         .filter(([key, value]) => before[key] && before[key].rev && before[key].rev !== value.rev)
         .map(([key, value]) => {
             const name = resolveInputPath(afterRaw, key);
             if (name === undefined) {
                 core.warning(
                     `Could not resolve a flake input path for flake.lock node "${key}" (${value.owner}/${value.repo}); ` +
-                        "falling back to the raw node key for build-filter's CFLC_INPUT_NAME, which will likely not " +
-                        "match any real --override-input target.",
+                        "falling back to the raw node key, which will likely not match any real " +
+                        "--override-input target.",
                 );
             }
             return {
@@ -227,7 +327,6 @@ export async function run(): Promise<void> {
     }
 
     const buildFilter = core.getInput("build-filter");
-    const buildFilterGc = core.getInput("build-filter-gc") === "true";
 
     const result = ["# Flake inputs changelog"];
     core.info(`Fetching changed files for PR #${prNumber}`);
@@ -293,10 +392,10 @@ export async function run(): Promise<void> {
             let irrelevant: Commit[] = [];
 
             if (buildFilter && commits.length > 0) {
-                // Bisecting is a clone plus a build per bisect step — expensive enough that
-                // it's worth skipping entirely when nothing that could change the outcome
-                // (this repo's *.nix/flake.lock state, the build command, or the commit
-                // range itself) has changed since a previous run computed it.
+                // Bisecting is a build per bisect step — expensive enough that it's worth
+                // skipping entirely when nothing that could change the outcome (this repo's
+                // *.nix/flake.lock state, the build command, or the commit range itself) has
+                // changed since a previous run computed it.
                 const cacheKey = buildFilterCacheKey(computeNixStateHash(), buildFilter, diff);
                 const cachedResult = getCachedBuildFilterResult(cacheKey);
                 if (cachedResult) {
@@ -306,9 +405,7 @@ export async function run(): Promise<void> {
                 } else {
                     core.info(`Running build-filter for ${diff.owner}/${diff.repo}`);
                     try {
-                        const filtered = filterCommitsByBuildRelevance(commits, diff, buildFilter, {
-                            gcBetweenBuilds: buildFilterGc,
-                        });
+                        const filtered = await filterCommitsByBuildRelevance(commits, diff, buildFilter);
                         relevant = filtered.relevant;
                         irrelevant = filtered.irrelevant;
                         setCachedBuildFilterResult(cacheKey, filtered);

@@ -15,10 +15,6 @@ inputs:
     description: "Shell command that builds your flake, used to hide changelog commits that don't affect the build output. See the README's 'Build filter' section for details."
     required: false
     default: ""
-  build-filter-gc:
-    description: "Run `nix store gc` after every build-filter build to reclaim disk space. Only enable this if nothing else in the same job depends on Nix store paths that aren't rooted yet at this point (e.g. run this action before restoring any build cache). See the README's 'Build filter' section for details."
-    required: false
-    default: "false"
 runs:
   using: node24
   main: dist/index.mjs
