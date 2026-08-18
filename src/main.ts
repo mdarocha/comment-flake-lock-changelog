@@ -17,11 +17,10 @@ import {
 } from "~/api";
 import { computeNixStateHash, filterCommitsByBuildRelevance } from "~/buildFilter";
 
-// Raw shape of a flake.lock node's `locked` field, straight from JSON — loosely
-// typed since only a subset of fields is ever present, depending on which fetcher
-// Nix resolved the input to. `owner`/`repo`/`host` are "github"-type fields; `url`/
-// `submodules` are "git"-type fields. Every other locked type (tarball, path,
-// indirect, mercurial, ...) is never processed past this point — see toLockfile.
+// Raw `locked` field of a flake.lock node, straight from JSON — loosely typed
+// since only a subset of fields is present, depending on the fetcher type.
+// `owner`/`repo`/`host` are "github"-type; `url`/`submodules` are "git"-type.
+// See toLockfile for which locked types are actually processed.
 interface RawLockedNode {
     type: string;
     owner?: string;
@@ -33,18 +32,16 @@ interface RawLockedNode {
     submodules?: boolean;
 }
 
-// Normalized, internal shape every entry in Lockfile is guaranteed to have,
-// regardless of which locked type it started out as. toLockfile is the only
-// place that produces these, and only once owner/repo/rev are all known for
-// certain — for "git", that means successfully parsing a github.com URL.
+// Normalized shape every Lockfile entry is guaranteed to have, regardless of its
+// original locked type. toLockfile is the only producer, and only once owner/
+// repo/rev are known for certain — for "git", that means parsing a github.com URL.
 interface LockfileItem {
     type: "github" | "git";
     owner: string;
     repo: string;
     rev: string;
-    // Subdirectory flake (flake.nix not at repo root), valid for either type.
-    // Dropping it silently would produce a wrong CFLC_INPUT override for any repo
-    // that sets it.
+    // Subdirectory flake, for either type. Dropping it silently would produce a
+    // wrong CFLC_INPUT override for a repo that sets it.
     dir?: string;
     // "github" type only: a non-default (GitHub Enterprise) host.
     host?: string;
@@ -73,15 +70,17 @@ function parseRawLockfile(content: string): RawLockfile {
 }
 
 /**
- * Extracts `{owner, repo}` from a git remote URL, when it points at github.com —
- * the only host this action's commit-listing (`compareCommits`, a GitHub REST API
- * call) can diff at all; a "git"-type locked node pointing anywhere else (GitLab,
- * sourcehut, a self-hosted server) has no equivalent endpoint this action can
- * call, so it's left undiffable, same as every other unsupported locked type.
- * Handles the URL forms Nix's git fetcher writes into flake.lock `url` fields:
- * `https://github.com/owner/repo[.git]`, `ssh://git@github.com/owner/repo[.git]`,
- * and (defensively) scp-like `git@github.com:owner/repo[.git]`. Returns undefined
- * for any other host, or a URL that doesn't parse at all.
+ * Extracts `{owner, repo}` from a git remote URL when it points at github.com —
+ * the only host `compareCommits` (a GitHub REST API call) can diff. Other hosts
+ * (GitLab, sourcehut, self-hosted) have no equivalent endpoint, so they're left
+ * undiffable.
+ *
+ * TODO: support other git hosts, likely via a generic `git log`-based diff instead
+ * of a REST API per host.
+ *
+ * Handles the URL forms Nix writes into flake.lock: `https://github.com/owner/repo
+ * [.git]`, `ssh://git@github.com/owner/repo[.git]`, and (defensively) scp-like
+ * `git@github.com:owner/repo[.git]`. Returns undefined otherwise.
  */
 function extractGithubOwnerRepo(url: string): { owner: string; repo: string } | undefined {
     let normalized = url;
@@ -112,20 +111,16 @@ function extractGithubOwnerRepo(url: string): { owner: string; repo: string } | 
 
 /**
  * Normalizes every diffable flake.lock node into a uniform `{owner, repo, rev, ...}`
- * shape, regardless of its original locked type. Only two locked types ever
- * produce an entry here:
+ * shape. Only two locked types produce an entry:
  *
- * - `"github"`: `owner`/`repo`/`rev`/`host`/`dir` come straight from the locked
- *   node.
+ * - `"github"`: fields come straight from the locked node.
  * - `"git"`, when its `url` resolves to a github.com repo (see
- *   `extractGithubOwnerRepo`) — `owner`/`repo` are parsed from the URL. This
- *   covers inputs declared as `git+https://github.com/owner/repo` (or
- *   `git+ssh://...`) instead of the `github:owner/repo` shorthand, which is a
- *   distinct, common locked type despite pointing at the same host.
+ *   `extractGithubOwnerRepo`) — covers inputs declared as
+ *   `git+https://github.com/owner/repo` instead of the `github:` shorthand.
  *
- * Every other locked type (tarball, path, indirect, mercurial, a "git" node
- * hosted anywhere but github.com, ...) is skipped outright: none of them carry a
- * commit history this action's GitHub-REST-API-based diffing can compare.
+ * Every other locked type, or a `"git"` node hosted anywhere but github.com, is
+ * skipped: none of them have a commit history this action's GitHub-based diffing
+ * can compare.
  */
 function toLockfile(raw: RawLockfile): Lockfile {
     return Object.entries(raw.nodes)
@@ -162,17 +157,14 @@ function toLockfile(raw: RawLockfile): Lockfile {
 }
 
 /**
- * Resolve the flake input path (usable with `nix flake --override-input <path> <url>`)
- * that reaches a given flake.lock node, by walking `inputs` references starting at the
- * lock file's root. flake.lock `nodes` keys are Nix's own internal, deduplicated node
- * identifiers — e.g. the same nixpkgs input ends up keyed "nixpkgs_2", "nixpkgs_3", etc.
- * whenever it's also locked (without `follows`) by another input in the graph, such as
- * devenv/flake-parts/disko each pulling their own copy. Those keys are not valid
- * `--override-input` targets on their own; the real path is whatever name(s) the
- * consuming flake's own `inputs` (and, transitively, each input's `inputs`) use to reach
- * that node. Returns undefined if no such path exists (e.g. the node isn't reachable
- * from root at all, which shouldn't normally happen for an input flake.lock actually
- * depends on).
+ * Resolves the flake input path (usable with `--override-input <path> <url>`) that
+ * reaches a given flake.lock node, by walking `inputs` references from the lock
+ * file's root. `nodes` keys are Nix's own deduplicated internal identifiers — e.g.
+ * the same nixpkgs input can end up keyed "nixpkgs_2" when another input in the
+ * graph (devenv, flake-parts, disko, ...) also locks it without `follows`. Those
+ * keys aren't valid override targets; the real path is whatever name(s) the
+ * consuming flake's `inputs` actually use to reach that node. Returns undefined if
+ * the node isn't reachable from root at all.
  */
 function resolveInputPath(lockfile: RawLockfile, targetKey: string): string | undefined {
     const { nodes, root } = lockfile;
@@ -400,10 +392,10 @@ export async function run(): Promise<void> {
             let irrelevant: Commit[] = [];
 
             if (buildFilter && commits.length > 0) {
-                // Bisecting is a clone plus a build per bisect step — expensive enough that
-                // it's worth skipping entirely when nothing that could change the outcome
-                // (this repo's *.nix/flake.lock state, the build command, or the commit
-                // range itself) has changed since a previous run computed it.
+                // Bisecting is a build per bisect step — expensive enough that it's worth
+                // skipping entirely when nothing that could change the outcome (this repo's
+                // *.nix/flake.lock state, the build command, or the commit range itself) has
+                // changed since a previous run computed it.
                 const cacheKey = buildFilterCacheKey(computeNixStateHash(), buildFilter, diff);
                 const cachedResult = getCachedBuildFilterResult(cacheKey);
                 if (cachedResult) {

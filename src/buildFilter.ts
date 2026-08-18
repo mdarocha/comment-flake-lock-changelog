@@ -17,27 +17,23 @@ function truncateForLog(value: string, maxLength = LOG_FINGERPRINT_MAX_LENGTH): 
 type Commit = { sha: string; message: string; url: string };
 
 interface Diff {
-    // Only "github" and "git" ever reach this action's diffable pipeline (see
-    // main.ts's toLockfile) — every other flake.lock locked type (tarball, path,
-    // indirect, mercurial, or a git remote hosted anywhere but github.com) has no
-    // commit-comparison endpoint this action can call at all, so it never produces a
-    // Diff in the first place. buildInputFlakeRef below branches on this to build the
-    // correct override syntax for whichever of the two it is.
+    // Only "github" and "git" ever reach this pipeline (see main.ts's toLockfile)
+    // — every other locked type has no commit-comparison endpoint this action can
+    // call, so it never produces a Diff. buildInputFlakeRef branches on this for
+    // the correct override syntax.
     type: "github" | "git";
     owner: string;
     repo: string;
     beforeRev: string;
     rev: string;
-    // Subdirectory flake, when the locked node has one — feeds into buildInputFlakeRef's
-    // CFLC_INPUT below for either type.
+    // Subdirectory flake, when set — feeds into buildInputFlakeRef for either type.
     dir?: string;
     // "github" type only: a non-default (GitHub Enterprise) host.
     host?: string;
     // "git" type only: whether the locked node fetches submodules. github: has no
-    // submodule support at all (it fetches via GitHub's tarball API, which never
-    // includes submodule content), so a git-type override must go through git+https
-    // rather than being coalesced into github: when this is set — silently dropping
-    // it would desync CFLC_INPUT's content from what flake.lock actually pins.
+    // submodule support (its tarball fetcher never includes submodule content), so
+    // silently coalescing a submodule-using git input into github: would desync
+    // CFLC_INPUT from what flake.lock actually pins.
     submodules?: boolean;
 }
 
@@ -106,20 +102,16 @@ class Semaphore {
     }
 }
 
-// Cap on auto-detected concurrency, independent of CPU count: each concurrent
-// build fetches and imports its own revision into the Nix store, so beyond a
-// handful in flight the marginal wall-clock win from more parallelism is
-// outweighed by peak disk usage and GitHub API/CDN request pressure — this bounds
-// that regardless of how many cores a large (including self-hosted) runner reports.
+// Cap on auto-detected concurrency, independent of CPU count: beyond a handful of
+// concurrent builds, disk usage and GitHub API/CDN request pressure outweigh the
+// marginal wall-clock win, even on a large (including self-hosted) runner.
 const MAX_AUTO_CONCURRENCY = 8;
 
 /**
- * Picks a default build concurrency when the caller doesn't specify one: the
- * number of CPUs available to this process. Prefers `os.availableParallelism()`
- * over `os.cpus().length` — unlike the latter, it respects container/cgroup CPU
- * quotas, which matters on containerized self-hosted runners where the host may
- * report far more cores than the job actually gets. Clamped to at least 1 and at
- * most MAX_AUTO_CONCURRENCY.
+ * Default build concurrency when the caller doesn't specify one: available CPUs,
+ * via `os.availableParallelism()` (respects container/cgroup quotas, unlike
+ * `os.cpus().length` — matters on containerized self-hosted runners), clamped to
+ * `[1, MAX_AUTO_CONCURRENCY]`.
  */
 function detectConcurrency(): number {
     const available = os.availableParallelism?.() ?? os.cpus().length;
@@ -152,12 +144,10 @@ let cachedNixStateHash: string | undefined;
 
 /**
  * Hash of every `*.nix` file and `flake.lock` under `cwd` — the complete set of
- * inputs (besides the input being bisected itself) that can change what the
- * build command evaluates. Used as part of the build-filter result cache key in
- * main.ts: a cached bisection result is only reusable while none of these files
- * have changed since it was computed. Memoized per process since these files
- * don't change mid-run; call resetNixStateHashCache() in tests that need a fresh
- * read.
+ * inputs (besides the one being bisected) that can change what the build command
+ * evaluates. Used in the build-filter result cache key: a cached result is only
+ * reusable while none of these files have changed. Memoized per process; call
+ * resetNixStateHashCache() in tests that need a fresh read.
  */
 export function computeNixStateHash(cwd: string = process.cwd()): string {
     if (cachedNixStateHash !== undefined) {
@@ -182,19 +172,12 @@ export function resetNixStateHashCache(): void {
 }
 
 /**
- * Every build overrides its input with a flake reference for the commit under
- * test (see buildInputFlakeRef), and each distinct revision Nix fetches that way
- * becomes its own content-addressed store path. Nothing dereferences a previous
- * commit's copy once a build moves on to the next one, so on a large repo
- * (nixpkgs is a few hundred MB to a couple GB depending on what's already
- * substituted) a bisection touching a few dozen commits can pile up tens of GB of
- * dead store paths that nothing ever reclaims until whatever runs `nix store gc`
- * next — which may be too late if a later step in the same job needs that disk.
- * To avoid that, this always runs right after every build, bounding peak usage to
- * roughly one fetched revision's worth per concurrent build in flight instead of
- * the whole bisection's. Safe to call from multiple concurrent builds:
- * `nix store gc` doesn't need any extra synchronization of its own — Nix's
- * locking already handles running it alongside other Nix operations.
+ * Each build's fetched revision becomes its own content-addressed store path, and
+ * nothing dereferences the previous one — a bisection over a few dozen commits on
+ * a large repo can pile up tens of GB before anything reclaims it. Running this
+ * after every build bounds peak usage to roughly one revision per concurrent
+ * build in flight, instead of the whole bisection's. Safe to call concurrently:
+ * `nix store gc` needs no extra synchronization — Nix's own locking handles it.
  */
 async function collectGarbage(): Promise<void> {
     const result = await spawnCmd(["nix", "store", "gc"]);
@@ -238,18 +221,15 @@ async function bisect(
 }
 
 /**
- * Builds the flake reference used to override an input for a given commit under
- * test (`CFLC_INPUT`), matching whichever locked type the input actually has:
+ * Builds the `CFLC_INPUT` flake reference for a commit, matching the input's
+ * locked type:
  *
- * - `"github"`: `github:owner/repo/rev`, with `?host=`/`&dir=` appended
- *   (URL-encoded) for GitHub Enterprise / subdirectory flakes. Nix's own
- *   `github:` fetcher pulls straight from GitHub's tarball API/CDN — no local
- *   checkout, and no submodule support.
+ * - `"github"`: `github:owner/repo/rev`, with `?host=`/`&dir=` for GitHub
+ *   Enterprise/subdirectory flakes. No local checkout, no submodule support.
  * - `"git"`: `git+https://github.com/owner/repo?rev=sha`, with `&dir=`/
- *   `&submodules=1` appended when set. Always uses `https://` regardless of the
- *   locked node's original scheme — `ssh://` would need runner-side key auth this
- *   action has no way to provide — which is safe because a `"git"`-typed `Diff`
- *   is only ever constructed for github.com-hosted git remotes (see main.ts's
+ *   `&submodules=1` when set. Always `https://`, even if the locked node used
+ *   `ssh://` — the runner has no way to provide SSH auth, and this is safe since
+ *   a `"git"`-typed `Diff` is only ever built for github.com-hosted remotes (see
  *   `toLockfile`).
  */
 function buildInputFlakeRef(diff: Diff, sha: string): string {
@@ -275,30 +255,23 @@ function buildInputFlakeRef(diff: Diff, sha: string): string {
 }
 
 /**
- * Filter commits by whether they affect the build output.
+ * Filters commits by whether they affect the build output.
  *
- * Each build runs the user-provided build command with a single environment
- * variable, `CFLC_INPUT` — a flake reference for the commit under test, correct
- * for whichever locked type the input actually has (see buildInputFlakeRef) — for
- * example: `nix build --override-input nixpkgs "$CFLC_INPUT"`. Every supported
- * type is fetched by Nix's own fetchers directly from the upstream host, so no
- * local git clone or checkout of any kind happens here; builds only ever touch
- * the filesystem via whatever the build command itself does. The command's
- * stdout is used as the build fingerprint. `nix store gc` always runs right
- * after each build finishes, to reclaim disk before starting more work (see
- * collectGarbage's doc comment).
+ * Each build runs the user's shell command with `CFLC_INPUT` set to a flake
+ * reference for the commit under test (see buildInputFlakeRef), e.g.
+ * `nix build --override-input nixpkgs "$CFLC_INPUT"`. No local git clone or
+ * checkout happens — Nix fetches directly from the upstream host. The command's
+ * stdout is the build fingerprint; `nix store gc` runs after each build (see
+ * collectGarbage).
  *
- * Uses a bisect algorithm to minimize the number of builds: O(k log N) where
- * k = number of output change points, instead of O(N) for a linear scan. The two
- * endpoint builds, and the two halves below any given bisect midpoint, are
- * independent of each other and run concurrently, bounded by options.concurrency.
+ * Bisects to minimize build count: O(k log N) for k change points, vs O(N) for a
+ * linear scan. Endpoint builds and the two halves below any bisect midpoint are
+ * independent and run concurrently, bounded by options.concurrency.
  *
- * @param options.concurrency - Maximum number of builds running at once. Defaults
- * to an automatically detected value (see detectConcurrency) rather than a fixed
- * number, since the right ceiling depends on the runner's own CPU count. Higher
- * values trade peak disk usage (each concurrent build fetches and imports its own
- * revision into the Nix store) for wall-clock time on large bisections — see the
- * README's 'Build filter' section.
+ * @param options.concurrency - Max builds running at once. Defaults to an
+ * auto-detected value (see detectConcurrency) rather than a fixed number, since
+ * the right ceiling depends on the runner's CPU count. Higher values trade peak
+ * disk usage for wall-clock time on large bisections.
  */
 export async function filterCommitsByBuildRelevance(
     commits: Commit[],
@@ -369,14 +342,11 @@ export async function filterCommitsByBuildRelevance(
     const relevant: Commit[] = [];
     const irrelevant: Commit[] = [];
 
-    // Classification itself is O(N) (one line per commit in the range, as opposed to
-    // the O(log N) build/fingerprint lines above), which can mean thousands of lines
-    // for a large range (e.g. a multi-day nixpkgs bump). @actions/core's debug/info
-    // both write to stdout unconditionally regardless of level — only the Actions
-    // runner UI hides "debug"-level lines when step debugging isn't enabled — so a
-    // burst that size risks overwhelming the log stream and crashing the whole
-    // action with EPIPE. Gate the write on isDebug() ourselves so a normal run emits
-    // none of these at all; the final summary line below always reports the totals.
+    // Classification is O(N) (vs O(log N) for the builds above), which can mean
+    // thousands of lines for a large range. core.debug/info write to stdout
+    // unconditionally regardless of level, so a burst that size risks crashing the
+    // action with EPIPE — gate on isDebug() ourselves so a normal run emits none of
+    // this; the summary line below always reports totals.
     for (let i = 0; i < commits.length; i++) {
         const isRelevant = outputs.get(i + 1) !== outputs.get(i);
         if (core.isDebug()) {
